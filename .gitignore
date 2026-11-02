@@ -1,0 +1,30 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# App bundle and distribution artifacts
+*.app
+*.zip
+*.dmg
+
+# IDE
+.vscode/
+.idea/
+
+# Environment / secrets
+local.mk
+.env
+*.pem
+*.p12
+credentials.json
