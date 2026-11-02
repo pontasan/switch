@@ -27,6 +27,8 @@
 
 没有工作区的窗口（例如空窗口）会显示在单独的 **Other Windows** 分区中。
 
+![使用 Switch 切换 VS Code 工作区](Resources/demo2.gif)
+
 ## 为 pterm 打造
 
 原生支持 [pterm](https://github.com/pontasan/pterm)，一款在单个窗口中管理多个终端的终端应用。

@@ -27,6 +27,8 @@
 
 빈 윈도우처럼 워크스페이스가 없는 윈도우는 별도의 **Other Windows** 영역에 표시됩니다.
 
+![Switch로 VS Code 워크스페이스를 전환하는 모습](Resources/demo2.gif)
+
 ## pterm 지원
 
 하나의 윈도우에서 여러 터미널을 관리하는 터미널 앱 [pterm](https://github.com/pontasan/pterm)을 기본 지원합니다.

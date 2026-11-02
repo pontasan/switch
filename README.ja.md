@@ -27,6 +27,8 @@
 
 空のウィンドウなど、ワークスペースのないウィンドウは **Other Windows** という別の区画に出ます。
 
+![Switch で VS Code のワークスペースを切り替える様子](Resources/demo2.gif)
+
 ## pterm に対応
 
 複数のターミナルを単一のウィンドウで管理するターミナルアプリ [pterm](https://github.com/pontasan/pterm) をネイティブサポートしています。

@@ -27,6 +27,8 @@ Working on many projects at once? Switch lists VS Code windows by workspace name
 
 Windows without a workspace, such as an empty window, appear under a separate **Other Windows** section.
 
+![Switching between VS Code workspaces with Switch](Resources/demo2.gif)
+
 ## Built for pterm
 
 Natively supports [pterm](https://github.com/pontasan/pterm), a terminal app that manages multiple terminals in a single window.
