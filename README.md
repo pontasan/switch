@@ -57,7 +57,7 @@ One private API is used: `_AXUIElementGetWindow`, which ties an Accessibility wi
 
 ## Install
 
-1. Download `Switch.zip` from the latest [release](../../releases).
+1. Download `switch-darwin-arm64.zip` from the latest [release](../../releases).
 2. Double-click the zip to unzip it.
 3. Drag `Switch.app` into your `Applications` folder.
 4. Open `Switch.app`. It has no Dock icon or window: look for its icon in the menu bar.

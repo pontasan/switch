@@ -57,7 +57,7 @@ Switch 仅使用一个私有 API：`_AXUIElementGetWindow`，用于将辅助功�
 
 ## 安装
 
-1. 从最新的[发布版本](../../releases)下载 `Switch.zip`。
+1. 从最新的[发布版本](../../releases)下载 `switch-darwin-arm64.zip`。
 2. 连按 zip 文件进行解压。
 3. 将 `Switch.app` 拖到“应用程序”文件夹。
 4. 打开 `Switch.app`。它没有程序坞图标，也没有窗口，请在菜单栏中查找它的图标。

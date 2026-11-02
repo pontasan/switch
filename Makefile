@@ -62,17 +62,18 @@ icon:
 # ticket. This contacts Apple, so a person runs it. It needs a keychain profile made once with
 #   xcrun notarytool store-credentials $(NOTARY_PROFILE)
 NOTARY_PROFILE ?= switch-notary
+DIST_ZIP = $(BUILD_DIR)/switch-darwin-arm64.zip
 
 dist:
 	swift build -c release
 	@$(MAKE) bundle CONFIG=release
 	codesign --force --deep --options runtime --timestamp --sign "$(IDENTITY)" $(APP_BUNDLE)
-	ditto -c -k --keepParent $(APP_BUNDLE) $(BUILD_DIR)/Switch.zip
-	xcrun notarytool submit $(BUILD_DIR)/Switch.zip --keychain-profile "$(NOTARY_PROFILE)" --wait
+	ditto -c -k --keepParent $(APP_BUNDLE) $(DIST_ZIP)
+	xcrun notarytool submit $(DIST_ZIP) --keychain-profile "$(NOTARY_PROFILE)" --wait
 	xcrun stapler staple $(APP_BUNDLE)
 	spctl --assess --type execute --verbose $(APP_BUNDLE)
-	ditto -c -k --keepParent $(APP_BUNDLE) $(BUILD_DIR)/Switch.zip
-	@echo "Distributable archive at $(BUILD_DIR)/Switch.zip"
+	ditto -c -k --keepParent $(APP_BUNDLE) $(DIST_ZIP)
+	@echo "Distributable archive at $(DIST_ZIP)"
 
 clean:
 	swift package clean
