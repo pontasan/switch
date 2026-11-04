@@ -26,10 +26,19 @@ final class AccessibilityWindow: ManagedWindow {
 
     var title: String? { Self.attribute(element, kAXTitleAttribute) as? String }
 
-    /// The window server's number for this window.
+    private let numberLock = NSLock()
+    private var knownNumber: Int?
+
+    /// The window server's number for this window, which it keeps for as long as it exists.
+    /// Asking waits for the application, for over half a second while it is animating
+    /// (measured), and the switching keys need the answer at once. So it is asked once, away
+    /// from the main thread, when the windows are read.
     var number: Int? {
+        if let known = numberLock.withLock({ knownNumber }) { return known }
         var number: CGWindowID = 0
-        return axElementGetWindow(element, &number) == .success ? Int(number) : nil
+        guard axElementGetWindow(element, &number) == .success else { return nil }
+        numberLock.withLock { knownNumber = Int(number) }
+        return Int(number)
     }
 
     var isMinimized: Bool { (Self.attribute(element, kAXMinimizedAttribute) as? Bool) == true }

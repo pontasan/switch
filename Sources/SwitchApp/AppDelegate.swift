@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var inputSourceObserver: NSObjectProtocol?
     private var shortcutMonitor: WindowShortcutMonitor?
     private var refreshAfterSwitch: (() -> Void)?
+    private var switchInFlight: SwitchInFlight?
     /// macOS posts this when an application's Accessibility permission changes.
     private static let permissionChanged = Notification.Name("com.apple.accessibility.api")
     private static let permissionSettle: TimeInterval = 1
@@ -157,10 +158,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             newestReading += 1
             let reading = newestReading
             // A slower, older reading could bring back an application that has quit.
-            let show: @MainActor ([ListedApplication]) -> Void = { [weak panel] applications in
+            let show: @MainActor ([ListedApplication]) -> Void = { [weak self, weak panel] applications in
                 guard reading == newestReading else { return }
                 latest = applications
-                if panel?.isVisible == true { panel?.update(applications: applications) }
+                if panel?.isVisible == true { panel?.update(applications: self?.withSwitchInFlight(applications) ?? applications) }
             }
             WindowListing.load(vscodeWindows: { [resolver] in
                                    VSCodeKnownWindows(byPath: vscodeLocator.knownWindows, withoutPath: resolver.windowsWithoutPath())
@@ -184,8 +185,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A debug build is for checks, and must not take the place of the real one at login.
         launchAtLogin.setUpOnFirstLaunch()
         #endif
-        menuBarController = MenuBarController(launchAtLogin: launchAtLogin, onClick: { [weak panel, resolver] anchor in
-            guard let panel else { return }
+        menuBarController = MenuBarController(launchAtLogin: launchAtLogin, onClick: { [weak self, weak panel, resolver] anchor in
+            guard let self, let panel else { return }
             if panel.isVisible {
                 panel.close()
                 return
@@ -193,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard !panel.wasJustClosed else { return }
             resolver.attachIfNeeded()
             let clicked = NSApp.currentEvent?.timestamp
-            panel.show(applications: latestApplications(),
+            panel.show(applications: self.withSwitchInFlight(latestApplications()),
                        hasPermission: AXIsProcessTrusted(),
                        frontmostName: NSWorkspace.shared.frontmostApplication?.localizedName,
                        below: anchor)
@@ -216,7 +217,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 resolver.attachIfNeeded()
-                panel.beginKeyboardSession(applications: Self.withFrontRefreshed(latestApplications(), front: front, known: self.vscodeLocator.knownWindows),
+                let refreshed = Self.withFrontRefreshed(latestApplications(), front: front, known: self.vscodeLocator.knownWindows)
+                panel.beginKeyboardSession(applications: self.withSwitchInFlight(refreshed),
                                            frontmostName: front.localizedName,
                                            below: anchor,
                                            step: command == .begin ? 1 : -1)
@@ -299,6 +301,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func withSwitchInFlight(_ applications: [ListedApplication]) -> [ListedApplication] {
+        switchInFlight?.applied(to: applications) ?? applications
+    }
+
     private static func requestPermission() {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
@@ -319,6 +325,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let columnsArea = WindowLayout.accessibilityFrame(appKitFrame: area, primaryScreenHeight: primary.frame.height)
         let locator = vscodeLocator
         waitingSwitches += 1
+        // Set before anything moves: the next press of the keys can come at any moment.
+        let inFlight = SwitchInFlight(applicationIdentifier: application.identifier,
+                                      processIdentifier: (application.application as? AccessibilityApplication)?.processIdentifier,
+                                      chosen: windows)
+        switchInFlight = inFlight
+        shortcutMonitor?.setSwitching(inFlight.processIdentifier.map { ($0, inFlight.windowCountWhenDone) })
         let switcher = WindowSwitcher(locateVSCodeWindow: { try await locator.locate(path: $0, in: $1) },
                                       newerSelectionIsWaiting: { [weak self] in (self?.waitingSwitches ?? 0) > 1 })
         // Selections run one after another. Overlapping ones would act on each other's
@@ -331,6 +343,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await switcher.apply(windows.map(\.selection), in: application.application, columnsArea: columnsArea)
             } catch {
                 present(error.localizedDescription)
+            }
+            if let processIdentifier = inFlight.processIdentifier {
+                await FrontWindow.waitUntilSettled(processIdentifier, atMost: inFlight.windowCountWhenDone) { waitingSwitches == 1 }
+            }
+            // A newer switch has taken over what is said about the windows.
+            if waitingSwitches == 1 {
+                switchInFlight = nil
+                shortcutMonitor?.setSwitching(nil)
             }
             refreshAfterSwitch?()
         }

@@ -281,6 +281,64 @@ final class VisibleWindowCountTests: XCTestCase {
     }
 }
 
+final class SwitchInFlightTests: XCTestCase {
+    private func row(_ path: String, minimized: Bool = false, front: Bool = false, inThisSpace: Bool = true) -> ListedWindow {
+        ListedWindow(title: path, toolTip: nil, isMinimized: minimized, selection: .vscode(path: path), isFrontmost: front, isInThisSpace: inThisSpace)
+    }
+
+    private func applied(_ rows: [ListedWindow], chosen: [ListedWindow], identifier: String = "code") -> [ListedWindow] {
+        let application = ListedApplication(name: "Code", icon: nil, windows: rows, problem: nil,
+                                            application: StubApplication(), bundleIdentifier: "code")
+        return SwitchInFlight(applicationIdentifier: identifier, processIdentifier: 1, chosen: chosen)
+            .applied(to: [application])[0].windows
+    }
+
+    func testTheChosenWindowIsInFrontAndTheOneBeingLeftIsMinimized() {
+        let rows = applied([row("a", front: true), row("b", minimized: true), row("c", minimized: true)], chosen: [row("b")])
+        XCTAssertEqual(rows.map(\.isFrontmost), [false, true, false])
+        XCTAssertEqual(rows.map(\.isMinimized), [true, false, true])
+    }
+
+    func testAWindowOnAnotherSpaceIsLeftAsItIs() {
+        let rows = applied([row("a"), row("b", minimized: true), row("elsewhere", inThisSpace: false)], chosen: [row("b")])
+        XCTAssertFalse(rows[2].isMinimized, "a switch minimizes only this Space's windows")
+    }
+
+    func testOtherApplicationsAreLeftAsTheyAre() {
+        let rows = applied([row("a", front: true)], chosen: [row("b")], identifier: "another")
+        XCTAssertEqual(rows.map(\.isFrontmost), [true])
+        XCTAssertEqual(rows.map(\.isMinimized), [false])
+    }
+
+    func testPtermSaysForItselfWhichOfItsRowsAreOnShow() {
+        let terminal = ListedWindow(title: "t", toolTip: nil, isMinimized: false, selection: .ptermTerminal(id: "1"), isFrontmost: true)
+        let rows = applied([terminal], chosen: [row("b")])
+        XCTAssertEqual(rows.map(\.isFrontmost), [true])
+    }
+
+    func testHowManyWindowsASwitchLeaves() {
+        func count(_ chosen: [ListedWindow]) -> Int {
+            SwitchInFlight(applicationIdentifier: "code", processIdentifier: 1, chosen: chosen).windowCountWhenDone
+        }
+        let terminals = ["1", "2"].map {
+            ListedWindow(title: $0, toolTip: nil, isMinimized: false, selection: .ptermTerminal(id: $0))
+        }
+        XCTAssertEqual(count([row("a")]), 1)
+        XCTAssertEqual(count([row("a"), row("b")]), 2, "macOS can switch between them")
+        XCTAssertEqual(count(terminals), 1, "pterm shows them in its one window")
+    }
+
+    private final class StubApplication: ManagedApplication {
+        func windows() -> [ManagedWindow] { [] }
+        func focusedWindow() -> ManagedWindow? { nil }
+        var isFrontmost: Bool { true }
+        func activate() {}
+        func terminate() -> Bool { true }
+        var isTerminated: Bool { false }
+        var questionCount: Int { 0 }
+    }
+}
+
 final class FrontWindowRefreshTests: XCTestCase {
     private func row(_ title: String, front: Bool = false, selection: SelectedWindow = .vscode(path: "/p")) -> ListedWindow {
         ListedWindow(title: title, toolTip: nil, isMinimized: false, selection: selection, isFrontmost: front)

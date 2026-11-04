@@ -236,22 +236,38 @@ enum IsolatedAppChecks {
 
         var applied: [String] = []
         var switching: Task<Void, Never>?
+        var switchInFlight: SwitchInFlight?
+        var newestSwitch = 0
+        var monitor: WindowShortcutMonitor?
         let area = NSScreen.main?.visibleFrame ?? .zero
         let columns = WindowLayout.accessibilityFrame(appKitFrame: area.insetBy(dx: 100, dy: 100), primaryScreenHeight: NSScreen.screens.first?.frame.height ?? 0)
         let panel = WindowPanelController(onApply: { application, chosen in
             applied = chosen.map(\.title)
             let switcher = WindowSwitcher(locateVSCodeWindow: target.locate)
+            // As the app does it: in turn, and saying what each will leave before anything moves.
+            let inFlight = SwitchInFlight(applicationIdentifier: application.identifier, processIdentifier: fixture.processIdentifier, chosen: chosen)
+            switchInFlight = inFlight
+            newestSwitch += 1
+            let thisSwitch = newestSwitch
+            monitor?.setSwitching((fixture.processIdentifier, inFlight.windowCountWhenDone))
+            let previous = switching
             switching = Task { @MainActor in
+                await previous?.value
                 try? await switcher.apply(chosen.map(\.selection), in: application.application, columnsArea: columns)
+                await FrontWindow.waitUntilSettled(fixture.processIdentifier, atMost: inFlight.windowCountWhenDone) { thisSwitch == newestSwitch }
+                if thisSwitch == newestSwitch {
+                    switchInFlight = nil
+                    monitor?.setSwitching(nil)
+                }
             }
         }, onRequestPermission: {}, onQuit: {})
         let anchor = NSRect(x: area.midX, y: area.maxY, width: 30, height: 0)
         func listed() -> [ListedApplication] {
-            return [ListedApplication(name: "Fixture", icon: nil,
-                                      windows: FrontWindow.refreshed(target.rows(), of: fixture.processIdentifier, in: FrontWindow.onScreenFrontToBack(), number: target.number),
-                                      problem: nil, application: managed, bundleIdentifier: "fixture")]
+            let list = [ListedApplication(name: "Fixture", icon: nil,
+                                          windows: FrontWindow.refreshed(target.rows(), of: fixture.processIdentifier, in: FrontWindow.onScreenFrontToBack(), number: target.number),
+                                          problem: nil, application: managed, bundleIdentifier: "fixture")]
+            return switchInFlight?.applied(to: list) ?? list
         }
-        var monitor: WindowShortcutMonitor?
         monitor = WindowShortcutMonitor { command in
             switch command {
             case .begin: panel.beginKeyboardSession(applications: listed(), frontmostName: "Fixture", below: anchor)
@@ -377,6 +393,43 @@ enum IsolatedAppChecks {
             check("the chosen window came back", chosen.map { shown?.title?.contains($0) == true } == true, "\(String(describing: shown?.title)) against \(String(describing: chosen))")
             check("the window that was in front is minimized", windows[0].isMinimized)
             check("the chosen window is in front", frontNumber() == shown?.number, "\(String(describing: frontNumber()))")
+        }
+
+        // The keys again straight after a switch, while both windows are still on screen.
+        applied = []
+        await onlyShow([windows[0]])
+        if await present("the keys straight after a switch") {
+            await holdModifiers()
+            await tapKey()
+            let firstChoice = panel.keyboardRow.flatMap { row in panel.applications.first?.windows[row] }
+            for modifier in held { post(modifier.key, down: false, flags: []) }
+            var bothOnScreen = false
+            for _ in 0..<100 where !bothOnScreen {
+                bothOnScreen = visibleCount() == 2
+                if !bothOnScreen { await settle(0.01) }
+            }
+            check("after a switch both windows are on screen for a moment", bothOnScreen, "visible \(visibleCount())")
+            await holdModifiers()
+            await tapKey(nil, wait: 0.15)
+            check("the keys open the panel while the windows are moving", panel.isVisible)
+            let rows = panel.applications.first?.windows ?? []
+            let front = rows.first(where: \.isFrontmost)
+            check("the row in front is the window just chosen", front?.title == firstChoice?.title && firstChoice != nil,
+                  "\(String(describing: front?.title)) against \(String(describing: firstChoice?.title))")
+            let second = panel.keyboardRow.flatMap { rows.indices.contains($0) ? rows[$0] : nil }
+            check("the first row is another window", second != nil && second?.title != firstChoice?.title, "\(String(describing: second?.title))")
+            await releaseModifiers()
+            await switching?.value
+            await settle(0.5)
+            let shown = windows.filter { !$0.isMinimized }
+            check("the second choice is the one on show", visibleCount() == 1 && shown.count == 1 && second.map { shown.first?.title?.contains($0.title) == true } == true,
+                  "visible \(visibleCount()), \(shown.map { $0.title ?? "" }) against \(String(describing: second?.title))")
+            await holdModifiers()
+            await tapKey()
+            check("after the windows settle the row in front is the one on show", second != nil && panel.applications.first?.windows.first(where: \.isFrontmost)?.title == second?.title,
+                  "\(String(describing: panel.applications.first?.windows.first(where: \.isFrontmost)?.title))")
+            await tapKey(53)
+            await releaseModifiers()
         }
 
         // A letter goes to the rows that start with it.

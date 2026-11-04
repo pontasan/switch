@@ -13,6 +13,8 @@ final class WindowShortcutMonitor: @unchecked Sendable {
     private let lock = NSLock()
     private var tracker = WindowShortcutTracker()
     private var frontmost: pid_t?
+    /// While a switch of Switch's own is moving windows, how many it will leave on show.
+    private var switching: (processIdentifier: pid_t, windowCount: Int)?
     private var tap: CFMachPort?
     private let onCommand: @MainActor (WindowShortcutTracker.Command) -> Void
 
@@ -34,6 +36,10 @@ final class WindowShortcutMonitor: @unchecked Sendable {
 
     func setFrontmost(_ processIdentifier: pid_t?) {
         lock.withLock { frontmost = processIdentifier }
+    }
+
+    func setSwitching(_ switching: (processIdentifier: pid_t, windowCount: Int)?) {
+        lock.withLock { self.switching = switching }
     }
 
     func sessionEnded() {
@@ -111,6 +117,7 @@ final class WindowShortcutMonitor: @unchecked Sendable {
         let outcome: WindowShortcutTracker.Outcome = lock.withLock {
             tracker.handle(event) {
                 guard let frontmost, frontmost != ProcessInfo.processInfo.processIdentifier else { return nil }
+                if let switching, switching.processIdentifier == frontmost { return switching.windowCount }
                 return FrontWindow.visibleWindowCount(of: frontmost, in: FrontWindow.visibleOnScreen())
             }
         }

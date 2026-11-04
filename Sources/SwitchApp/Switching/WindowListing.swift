@@ -4,7 +4,7 @@ import ApplicationServices
 struct ListedWindow {
     let title: String
     let toolTip: String?
-    let isMinimized: Bool
+    var isMinimized: Bool
     let selection: SelectedWindow
     /// A VS Code window with no local path, found through Accessibility alone. It is listed
     /// below the others, and reached directly because `code` has no path to take.
@@ -32,6 +32,15 @@ struct ListedWindow {
         group.map { "group:" + $0 } ?? (isWithoutPath ? "without path" : "")
     }
 
+    func isSameWindow(as other: ListedWindow) -> Bool {
+        switch (selection, other.selection) {
+        case (.direct(let window), .direct(let otherWindow)): return window.isSame(as: otherWindow)
+        case (.vscode(let path), .vscode(let otherPath)): return path == otherPath
+        case (.ptermTerminal(let id), .ptermTerminal(let otherID)): return id == otherID
+        default: return false
+        }
+    }
+
     /// Two readings with the same identities have the same thing on each row.
     var rowIdentity: String {
         if case .ptermTerminal(let id) = selection { return section + "/" + id }
@@ -51,6 +60,43 @@ struct ListedApplication {
     /// What a pin is stored under. An application without a bundle identifier is
     /// known only by its name.
     var identifier: String { bundleIdentifier ?? name }
+}
+
+/// A switch that has started. Until its windows have finished moving, the screen shows the
+/// old window and the new one together (measured: from about 0.2 to 1.25 seconds after the
+/// keys are released, with VS Code), so what is on screen does not say where things stand.
+/// What the switch will leave does.
+struct SwitchInFlight {
+    let applicationIdentifier: String
+    let processIdentifier: pid_t?
+    let chosen: [ListedWindow]
+
+    /// pterm shows all its chosen terminals in its one window.
+    var windowCountWhenDone: Int {
+        chosen.contains { if case .ptermTerminal = $0.selection { return true } else { return false } } ? 1 : chosen.count
+    }
+
+    /// Only the windows of this Space are minimized by a switch, and pterm says for itself
+    /// which of its rows are on show.
+    func applied(to applications: [ListedApplication]) -> [ListedApplication] {
+        applications.map { application in
+            guard application.identifier == applicationIdentifier else { return application }
+            var result = application
+            result.windows = application.windows.map { row in
+                if case .ptermTerminal = row.selection { return row }
+                let isChosen = chosen.contains { $0.isSameWindow(as: row) }
+                var marked = row
+                marked.isFrontmost = isChosen
+                if isChosen {
+                    marked.isMinimized = false
+                } else if row.isInThisSpace {
+                    marked.isMinimized = true
+                }
+                return marked
+            }
+            return result
+        }
+    }
 }
 
 /// Which of an application's windows is in front. The window server is asked, because an
@@ -103,6 +149,20 @@ enum FrontWindow {
             $0.processIdentifier == processIdentifier && $0.layer == 0 && $0.alpha > 0
                 && $0.size.width >= smallestWindowSide && $0.size.height >= smallestWindowSide
         }.count
+    }
+
+    private static let settleTimeout: TimeInterval = 5
+    private static let settlePollNanoseconds: UInt64 = 50_000_000
+
+    /// Until no more than this many windows are on show. A window that an application will
+    /// not minimize, or a new one, ends the wait at the time limit and not before.
+    @MainActor
+    static func waitUntilSettled(_ processIdentifier: pid_t, atMost count: Int, while keepWaiting: () -> Bool = { true }) async {
+        let deadline = Date().addingTimeInterval(settleTimeout)
+        while Date() < deadline, keepWaiting(),
+              visibleWindowCount(of: processIdentifier, in: visibleOnScreen()) > count {
+            try? await Task.sleep(nanoseconds: settlePollNanoseconds)
+        }
     }
 
     /// What is in front now. The list can be from before the last switch, and the keys start
