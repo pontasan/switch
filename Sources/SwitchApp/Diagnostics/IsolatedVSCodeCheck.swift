@@ -653,7 +653,7 @@ enum IsolatedVSCodeCheck {
         finish(outputPath)
     }
 
-    private static func commandLine(of pid: pid_t) -> String {
+    static func commandLine(of pid: pid_t) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
         process.arguments = ["-o", "command=", "-p", String(pid)]

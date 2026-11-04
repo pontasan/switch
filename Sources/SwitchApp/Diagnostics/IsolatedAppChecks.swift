@@ -85,6 +85,400 @@ enum IsolatedAppChecks {
         }
     }
 
+    // MARK: The switching keys
+
+    /// The application under test: three windows, and how it lists and reaches them.
+    struct ShortcutTarget {
+        let application: NSRunningApplication
+        let rows: @MainActor () -> [ListedWindow]
+        let number: @MainActor (ListedWindow) -> Int?
+        let locate: (String, ManagedApplication) async throws -> ManagedWindow
+    }
+
+    /// `--shortcut-check out.json` uses a fixture, and adding `--bundle-identifier` and
+    /// `--profile` uses an instance started on that throwaway profile instead.
+    static func runShortcutCheck(outputPath: String, bundleIdentifier: String?, profile: String?) async {
+        guard AXIsProcessTrusted() else { fatalError("No Accessibility permission") }
+        let initial = NSWorkspace.shared.frontmostApplication
+        defer { initial?.activate() }
+        guard let bundleIdentifier, let profile else {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            configuration.activates = true
+            configuration.arguments = [RealWindowSelfTest.fixtureArgument, "3"]
+            guard let fixture = try? await NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) else {
+                fatalError("Cannot start a fixture")
+            }
+            defer { fixture.forceTerminate() }
+            await runShortcutCheck(outputPath: outputPath, target: directTarget(fixture))
+            return
+        }
+        guard let instance = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleIdentifier && IsolatedVSCodeCheck.commandLine(of: $0.processIdentifier).contains(profile)
+        }) else { fatalError("The instance on the throwaway profile is not running") }
+        guard bundleIdentifier == VSCodeWindowCatalog.applicationBundleIdentifier else {
+            await runShortcutCheck(outputPath: outputPath, target: directTarget(instance))
+            return
+        }
+        // Paired as the app itself does, from this instance's own saved state.
+        let data = URL(fileURLWithPath: profile, isDirectory: true)
+        let opener = VSCodeCLIWindowOpener(extraArguments: ["--user-data-dir", data.path])
+        let locator = VSCodeWindowLocator(opener: opener, applicationURL: { instance.bundleURL ?? URL(fileURLWithPath: "/Applications/Visual Studio Code.app") })
+        let resolver = VSCodeWindowResolver(locator: locator, findApplication: { instance }, supportDirectory: { data })
+        resolver.start()
+        let catalog = VSCodeWindowCatalog(supportDirectory: data)
+        func entries() -> [VSCodeWindowEntry] { (try? catalog.openWindows()) ?? [] }
+        // VS Code saves its windows when it loses focus.
+        for _ in 0..<8 where entries().count != 3 || entries().contains(where: { !locator.isKnown(path: $0.exactPath) }) {
+            instance.activate()
+            await settle(1)
+            initial?.activate()
+            await settle(1.5)
+            resolver.attachIfNeeded()
+        }
+        check("all 3 VS Code windows are paired by path", entries().count == 3 && entries().allSatisfy { locator.isKnown(path: $0.exactPath) },
+              "\(entries().count) saved")
+        let managed = AccessibilityApplication(application: instance)
+        await runShortcutCheck(outputPath: outputPath, target: ShortcutTarget(
+            application: instance,
+            rows: {
+                let list = entries()
+                let reachable = Set(managed.accessibilityWindows().compactMap(\.number))
+                return zip(list, VSCodeWindowCatalog.displayTitles(for: list)).map { entry, title in
+                    let number = (locator.knownWindows[entry.exactPath] as? AccessibilityWindow)?.number
+                    return ListedWindow(title: title, toolTip: entry.target.path,
+                                        isMinimized: locator.knownWindows[entry.exactPath]?.isMinimized == true,
+                                        selection: .vscode(path: entry.exactPath),
+                                        isInThisSpace: number.map(reachable.contains) ?? false)
+                }
+            },
+            number: { row in
+                if case .vscode(let path) = row.selection { return (locator.knownWindows[path] as? AccessibilityWindow)?.number }
+                return nil
+            },
+            locate: { try await locator.locate(path: $0, in: $1) }))
+        withExtendedLifetime(resolver) {}
+    }
+
+    private static func directTarget(_ application: NSRunningApplication) -> ShortcutTarget {
+        let managed = AccessibilityApplication(application: application)
+        return ShortcutTarget(application: application,
+                              rows: { managed.windowRows() ?? [] },
+                              number: FrontWindow.number(of:),
+                              locate: { _, _ in throw WindowSwitchError(messages: ["No VS Code here"]) })
+    }
+
+    /// The shortcut from the settings, posted as real key events through the real tap, panel
+    /// and switcher. Keys are posted only while the application under test is in front,
+    /// because otherwise they would reach the user's application.
+    private static func runShortcutCheck(outputPath: String, target: ShortcutTarget) async {
+        guard let shortcut = WindowShortcut.fromSettings() else { fatalError("The shortcut is turned off in System Settings") }
+        let fixture = target.application
+        let managed = AccessibilityApplication(application: fixture)
+        for _ in 0..<100 where managed.accessibilityWindows().count < 3 { await settle(0.05) }
+        let windows = managed.accessibilityWindows()
+        check("the application has 3 windows", windows.count == 3, "\(windows.count)")
+        guard windows.count == 3 else {
+            write(outputPath)
+            return
+        }
+
+        func visibleCount() -> Int {
+            FrontWindow.visibleWindowCount(of: fixture.processIdentifier, in: FrontWindow.visibleOnScreen())
+        }
+        func frontNumber() -> Int? {
+            FrontWindow.onScreenFrontToBack().first { $0.processIdentifier == fixture.processIdentifier }?.number
+        }
+        func bringForward() async -> Bool {
+            fixture.activate()
+            for _ in 0..<40 where NSWorkspace.shared.frontmostApplication != fixture { await settle(0.05) }
+            return NSWorkspace.shared.frontmostApplication == fixture
+        }
+        func onlyShow(_ shown: [AccessibilityWindow]) async {
+            for window in windows { try? window.setMinimized(!shown.contains { $0.isSame(as: window) }) }
+            await settle(1.2)
+            for window in shown { try? window.raise() }
+            await settle(0.3)
+        }
+        let modifierKeys: [(flag: CGEventFlags, key: CGKeyCode)] = [(.maskCommand, 55), (.maskShift, 56), (.maskAlternate, 58), (.maskControl, 59)]
+        let held = modifierKeys.filter { shortcut.modifiers & $0.flag.rawValue != 0 }
+        let flags = CGEventFlags(rawValue: shortcut.modifiers)
+        func post(_ key: CGKeyCode, down: Bool, flags: CGEventFlags) {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)
+            event?.flags = flags
+            event?.post(tap: .cghidEventTap)
+        }
+        func holdModifiers() async {
+            for modifier in held { post(modifier.key, down: true, flags: flags) }
+            await settle(0.1)
+        }
+        func releaseModifiers() async {
+            for modifier in held { post(modifier.key, down: false, flags: []) }
+            await settle(0.1)
+        }
+        func tapKey(_ key: CGKeyCode? = nil, wait: Double = 0.3) async {
+            let key = key ?? CGKeyCode(shortcut.keyCode)
+            post(key, down: true, flags: flags)
+            post(key, down: false, flags: flags)
+            await settle(wait)
+        }
+
+        let withShift = flags.union(.maskShift)
+        func tapKeyGoingBack() async {
+            post(56, down: true, flags: withShift)
+            await settle(0.05)
+            post(CGKeyCode(shortcut.keyCode), down: true, flags: withShift)
+            post(CGKeyCode(shortcut.keyCode), down: false, flags: withShift)
+            await settle(0.05)
+            post(56, down: false, flags: flags)
+            await settle(0.3)
+        }
+
+        var applied: [String] = []
+        var switching: Task<Void, Never>?
+        let area = NSScreen.main?.visibleFrame ?? .zero
+        let columns = WindowLayout.accessibilityFrame(appKitFrame: area.insetBy(dx: 100, dy: 100), primaryScreenHeight: NSScreen.screens.first?.frame.height ?? 0)
+        let panel = WindowPanelController(onApply: { application, chosen in
+            applied = chosen.map(\.title)
+            let switcher = WindowSwitcher(locateVSCodeWindow: target.locate)
+            switching = Task { @MainActor in
+                try? await switcher.apply(chosen.map(\.selection), in: application.application, columnsArea: columns)
+            }
+        }, onRequestPermission: {}, onQuit: {})
+        let anchor = NSRect(x: area.midX, y: area.maxY, width: 30, height: 0)
+        func listed() -> [ListedApplication] {
+            return [ListedApplication(name: "Fixture", icon: nil,
+                                      windows: FrontWindow.refreshed(target.rows(), of: fixture.processIdentifier, in: FrontWindow.onScreenFrontToBack(), number: target.number),
+                                      problem: nil, application: managed, bundleIdentifier: "fixture")]
+        }
+        var monitor: WindowShortcutMonitor?
+        monitor = WindowShortcutMonitor { command in
+            switch command {
+            case .begin: panel.beginKeyboardSession(applications: listed(), frontmostName: "Fixture", below: anchor)
+            case .beginGoingBack: panel.beginKeyboardSession(applications: listed(), frontmostName: "Fixture", below: anchor, step: -1)
+            case .advance: panel.moveKeyboardSelection(by: 1)
+            case .retreat: panel.moveKeyboardSelection(by: -1)
+            case .jump(let letter): panel.jumpKeyboardSelection(to: letter)
+            case .commit: panel.commitKeyboardSelection()
+            case .cancel: panel.cancelKeyboardSession()
+            }
+        }
+        panel.onKeyboardSessionEnded = { monitor?.sessionEnded() }
+        monitor?.setShortcut(shortcut)
+        let letterKeys = LetterKeys.current()
+        monitor?.setLetterKeys(letterKeys)
+        monitor?.setFrontmost(fixture.processIdentifier)
+        defer { monitor?.stop() }
+
+        func present(_ detail: String) async -> Bool {
+            let ready = await bringForward()
+            if !ready { check("the fixture is in front: \(detail)", false, "\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nothing") is") }
+            return ready
+        }
+
+        // What macOS does by itself, which is what this feature rests on.
+        await settle(0.5)
+        if await present("macOS with 3 windows") {
+            let before = frontNumber()
+            await holdModifiers()
+            await tapKey()
+            await releaseModifiers()
+            await settle(0.3)
+            check("without Switch, macOS switches between 3 windows", frontNumber() != before, "front stayed \(String(describing: before))")
+            let afterForward = frontNumber()
+            await holdModifiers()
+            await tapKeyGoingBack()
+            await releaseModifiers()
+            await settle(0.3)
+            check("without Switch, the shortcut with Shift goes back to the window before", frontNumber() == before, "\(String(describing: before)), then \(String(describing: afterForward)), then \(String(describing: frontNumber()))")
+        }
+        await onlyShow([windows[0]])
+        if await present("macOS with 1 window") {
+            let before = frontNumber()
+            await holdModifiers()
+            await tapKey()
+            await releaseModifiers()
+            await settle(0.3)
+            check("without Switch, macOS does nothing with 1 window and 2 minimized",
+                  frontNumber() == before && visibleCount() == 1, "front \(String(describing: before)) to \(String(describing: frontNumber())), visible \(visibleCount())")
+        }
+        await onlyShow([])
+        if await present("macOS with no window") {
+            await holdModifiers()
+            await tapKey()
+            await releaseModifiers()
+            await settle(0.3)
+            check("without Switch, macOS does nothing with every window minimized", visibleCount() == 0, "visible \(visibleCount())")
+        }
+
+        monitor?.start()
+        check("the tap starts", monitor?.isRunning == true)
+        await settle(0.2)
+
+        // Two or more stay with macOS.
+        await onlyShow(windows)
+        if await present("3 windows") {
+            let before = frontNumber()
+            await holdModifiers()
+            await tapKey()
+            check("with 3 windows the panel stays closed", !panel.isVisible)
+            await releaseModifiers()
+            await settle(0.3)
+            check("with 3 windows macOS still switches", frontNumber() != before, "front stayed \(String(describing: before))")
+            await holdModifiers()
+            await tapKeyGoingBack()
+            check("with 3 windows the shortcut with Shift leaves the panel closed", !panel.isVisible)
+            await releaseModifiers()
+            await settle(0.3)
+            check("with 3 windows nothing was chosen by Switch", applied.isEmpty, "\(applied)")
+        }
+
+        // One window: the panel, moving, and choosing on release.
+        await onlyShow([windows[0]])
+        if await present("1 window") {
+            let before = frontNumber()
+            await holdModifiers()
+            await tapKey()
+            check("with 1 window the panel opens", panel.isVisible)
+            check("macOS does not act on the key that was taken", frontNumber() == before)
+            let first = panel.keyboardRow
+            let rows = panel.applications.first?.windows ?? []
+            check("the panel lists all 3 windows", rows.count == 3, "\(rows.count)")
+            check("the first row is not the window in front", first.map { !rows[$0].isFrontmost } == true, "row \(String(describing: first))")
+            await tapKey()
+            let second = panel.keyboardRow
+            check("pressing again moves the row", second != first && second != nil, "\(String(describing: first)) to \(String(describing: second))")
+            await tapKey()
+            await tapKey()
+            await tapKey()
+            check("three more presses go round to the same row", panel.keyboardRow == second, "\(String(describing: panel.keyboardRow))")
+            await tapKey(125)
+            let afterDown = panel.keyboardRow
+            check("the down arrow moves to the next row", afterDown == second.map { ($0 + 1) % rows.count }, "\(String(describing: second)) to \(String(describing: afterDown))")
+            await tapKey(126)
+            check("the up arrow moves back", panel.keyboardRow == second, "\(String(describing: afterDown)) to \(String(describing: panel.keyboardRow))")
+            await tapKey(126)
+            await tapKey(125)
+            check("the panel stays open through the arrows, and macOS does not act", panel.isVisible && frontNumber() == before)
+            await tapKeyGoingBack()
+            let afterShift = panel.keyboardRow
+            check("the shortcut with Shift moves to the row before", afterShift == second.map { ($0 + rows.count - 1) % rows.count }, "\(String(describing: second)) to \(String(describing: afterShift))")
+            await tapKey()
+            check("the shortcut without Shift moves on again", panel.keyboardRow == second, "\(String(describing: afterShift)) to \(String(describing: panel.keyboardRow))")
+            let chosen = second.map { rows[$0].title }
+            await releaseModifiers()
+            await settle(0.2)
+            check("releasing closes the panel", !panel.isVisible)
+            check("releasing chooses the row the keys were on", applied == chosen.map { [$0] }, "\(applied) against \(String(describing: chosen))")
+            await switching?.value
+            await settle(0.8)
+            check("the chosen window is the one on show", visibleCount() == 1, "visible \(visibleCount())")
+            let shown = windows.first { !$0.isMinimized }
+            check("the chosen window came back", chosen.map { shown?.title?.contains($0) == true } == true, "\(String(describing: shown?.title)) against \(String(describing: chosen))")
+            check("the window that was in front is minimized", windows[0].isMinimized)
+            check("the chosen window is in front", frontNumber() == shown?.number, "\(String(describing: frontNumber()))")
+        }
+
+        // A letter goes to the rows that start with it.
+        applied = []
+        await onlyShow([windows[0]])
+        if await present("letters") {
+            await holdModifiers()
+            await tapKey()
+            let rows = panel.applications.first?.windows ?? []
+            func first(_ row: ListedWindow) -> Character? { row.title.first.flatMap { $0.lowercased().first } }
+            func key(for letter: Character) -> CGKeyCode? {
+                letterKeys.first { $0.value == letter }.map { CGKeyCode($0.key) }
+            }
+            guard let letter = rows.last.flatMap(first), let code = key(for: letter) else {
+                check("the rows start with a letter on this keyboard", false, rows.map(\.title).joined(separator: ", "))
+                write(outputPath)
+                return
+            }
+            let matches = rows.indices.filter { first(rows[$0]) == letter }
+            await tapKey(code)
+            check("a letter goes to the first row starting with it", panel.keyboardRow == matches.first, "\(String(describing: panel.keyboardRow)) against \(matches)")
+            check("a letter does not close the panel", panel.isVisible)
+            await tapKey(code)
+            check("the same letter again goes to the next match, or stays on the only one",
+                  panel.keyboardRow == matches[1 % matches.count], "\(String(describing: panel.keyboardRow)) against \(matches)")
+            if let other = letterKeys.first(where: { entry in !rows.contains { first($0) == entry.value } }) {
+                let before = panel.keyboardRow
+                await tapKey(CGKeyCode(other.key))
+                check("a letter that starts no row moves nothing", panel.keyboardRow == before, "\(other.value): \(String(describing: panel.keyboardRow))")
+            }
+            await tapKey()
+            await tapKey(code)
+            check("after another key the letter starts from the top again", panel.keyboardRow == matches.first, "\(String(describing: panel.keyboardRow))")
+            let chosen = panel.keyboardRow.map { rows[$0].title }
+            await releaseModifiers()
+            await settle(0.2)
+            check("releasing after a letter chooses that row", applied == chosen.map { [$0] }, "\(applied)")
+            await switching?.value
+            await settle(0.8)
+        }
+
+        // Escape leaves everything as it was.
+        applied = []
+        await onlyShow([windows[0]])
+        if await present("Escape") {
+            await holdModifiers()
+            await tapKey()
+            check("the panel opens before Escape", panel.isVisible)
+            await tapKey(53)
+            check("Escape closes the panel", !panel.isVisible)
+            await releaseModifiers()
+            await settle(0.5)
+            check("releasing after Escape chooses nothing", applied.isEmpty, "\(applied)")
+            check("Escape changes no window", !windows[0].isMinimized && visibleCount() == 1, "visible \(visibleCount())")
+        }
+
+        // Starting with Shift goes straight to the row before the window in front.
+        applied = []
+        await onlyShow([windows[0]])
+        if await present("starting with Shift") {
+            await holdModifiers()
+            await tapKeyGoingBack()
+            check("with 1 window the shortcut with Shift opens the panel", panel.isVisible)
+            let rows = panel.applications.first?.windows ?? []
+            let front = rows.lastIndex(where: \.isFrontmost)
+            check("starting with Shift chooses the row before the window in front",
+                  panel.keyboardRow == front.map { ($0 + rows.count - 1) % rows.count }, "\(String(describing: panel.keyboardRow)), front \(String(describing: front))")
+            let chosen = panel.keyboardRow.map { rows[$0].title }
+            await releaseModifiers()
+            await settle(0.2)
+            check("releasing after starting with Shift chooses that row", applied == chosen.map { [$0] }, "\(applied)")
+            await switching?.value
+            await settle(0.8)
+        }
+
+        // Every window minimized.
+        await onlyShow([])
+        if await present("no window") {
+            await holdModifiers()
+            await tapKey()
+            check("with no window the panel opens", panel.isVisible)
+            check("with no window the first row is at the top", panel.keyboardRow == 0, "\(String(describing: panel.keyboardRow))")
+            await releaseModifiers()
+            await settle(0.2)
+            await switching?.value
+            await settle(0.8)
+            check("with no window releasing brings one back", visibleCount() == 1, "visible \(visibleCount())")
+        }
+
+        // The tap goes when asked, and the key goes back to macOS.
+        monitor?.stop()
+        check("the tap stops", monitor?.isRunning == false)
+        await onlyShow([windows[0]])
+        if await present("after stopping") {
+            await holdModifiers()
+            await tapKey()
+            check("with the tap stopped the panel stays closed", !panel.isVisible)
+            await releaseModifiers()
+        }
+        write(outputPath)
+    }
+
     // MARK: The delete key
 
     private static func launchFixture(extraArguments: [String] = []) async -> NSRunningApplication {

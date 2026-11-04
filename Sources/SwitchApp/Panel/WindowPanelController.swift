@@ -45,6 +45,33 @@ private final class SeparatedRowView: NSTableRowView {
     }
 }
 
+/// The row the switching keys are on. The band covers the window's own part of the row, not
+/// the heading or the line above it.
+private final class KeyboardRowView: NSTableRowView {
+    private let hasLine: Bool
+
+    init(hasLine: Bool) {
+        self.hasLine = hasLine
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("KeyboardRowView is not created from an archive")
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        if hasLine {
+            WindowPanelController.lineColor.setFill()
+            let y = bounds.minY + (WindowPanelController.separatorHeight - 1) / 2
+            NSRect(x: bounds.minX + 6, y: y, width: bounds.width - 12, height: 1).fill()
+        }
+        NSColor.controlAccentColor.withAlphaComponent(0.3).setFill()
+        let band = NSRect(x: bounds.minX, y: bounds.maxY - WindowPanelController.rowHeight, width: bounds.width, height: WindowPanelController.rowHeight)
+        NSBezierPath(roundedRect: band.insetBy(dx: 2, dy: 1), xRadius: 6, yRadius: 6).fill()
+    }
+}
+
 /// A window's place in a Shift+click selection: its number in a filled circle, which is
 /// also where it will land from the left.
 final class OrderBadge: NSView {
@@ -156,6 +183,15 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     private var frontmostNameWhenOpened: String?
     private var isChoosingForTheUser = false
     private var quitting: (application: ManagedApplication, requested: Date)?
+    /// Open from the switching keys, which are still held.
+    private(set) var isKeyboardSession = false
+    private(set) var keyboardRow: Int?
+    private var hasMovedKeyboardRow = false
+    /// Which way the keys started, for working out the first row again from a new reading.
+    private var keyboardStep = 1
+    /// The letter that last moved the row. The same one again goes on to the next match.
+    private var lastKeyboardLetter: Character?
+    var onKeyboardSessionEnded: (() -> Void)?
 
     init(onApply: @escaping (ListedApplication, [ListedWindow]) -> Void,
          onRequestPermission: @escaping () -> Void,
@@ -211,14 +247,22 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         let previousRows = currentApplication?.windows.map(\.rowIdentity)
         let previousSelection = selection
         let previousIndex = selectedApplication
+        let previousKeyboardWindow = keyboardWindowIdentity()
         listedApplications = applications
         self.applications = pins.ordered(applications)
         applicationsTable.reloadData()
         let list = self.applications
         // When the chosen application has quit, the one that took its row is chosen.
-        let index = frontmostNameWhenOpened.flatMap { name in list.firstIndex { $0.name == name } }
-            ?? list.firstIndex { $0.identifier == previousIdentifier }
-            ?? (list.isEmpty ? nil : min(previousIndex ?? 0, list.count - 1))
+        let frontmostIndex = frontmostNameWhenOpened.flatMap { name in list.firstIndex { $0.name == name } }
+        let index: Int?
+        if isKeyboardSession, frontmostNameWhenOpened != nil {
+            // The keys belong to the application in front, and never to the next one along.
+            index = frontmostIndex
+        } else {
+            index = frontmostIndex
+                ?? list.firstIndex { $0.identifier == previousIdentifier }
+                ?? (list.isEmpty ? nil : min(previousIndex ?? 0, list.count - 1))
+        }
         chooseApplication(index)
         if let index {
             chooseRowForTheUser(index)
@@ -226,7 +270,40 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
                 selection = previousSelection
                 windowsTable.reloadData()
             }
+        } else if isKeyboardSession {
+            clearApplicationRowForTheUser()
         }
+        if isKeyboardSession { restoreKeyboardRow(previousKeyboardWindow, previousApplication: previousIdentifier) }
+    }
+
+    /// A window that stays stays chosen. Until the keys have moved, the row follows from
+    /// what is in front, which the new reading may say better.
+    private func restoreKeyboardRow(_ previous: (key: String, nth: Int)?, previousApplication: String?) {
+        guard let application = currentApplication else {
+            keyboardRow = nil
+            hasMovedKeyboardRow = false
+            return
+        }
+        guard hasMovedKeyboardRow, let previous, application.identifier == previousApplication else {
+            keyboardRow = Self.nextKeyboardRow(after: nil, in: application.windows, step: keyboardStep)
+            hasMovedKeyboardRow = false
+            windowsTable.reloadData()
+            return
+        }
+        let matches = application.windows.indices.filter { application.windows[$0].pinKey == previous.key }
+        if matches.indices.contains(previous.nth) {
+            keyboardRow = matches[previous.nth]
+        } else {
+            keyboardRow = Self.nextKeyboardRow(after: nil, in: application.windows, step: keyboardStep)
+            hasMovedKeyboardRow = false
+        }
+        windowsTable.reloadData()
+    }
+
+    private func keyboardWindowIdentity() -> (key: String, nth: Int)? {
+        guard let windows = currentApplication?.windows, let row = keyboardRow, windows.indices.contains(row) else { return nil }
+        let key = windows[row].pinKey
+        return (key, windows[..<row].filter { $0.pinKey == key }.count)
     }
 
     private func placePanel() {
@@ -317,9 +394,14 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         applicationsTable.reloadData()
         let list = self.applications
         frontmostNameWhenOpened = frontmostName
-        let initial = list.firstIndex { $0.name == frontmostName } ?? (list.isEmpty ? nil : 0)
+        let frontmostIndex = list.firstIndex { $0.name == frontmostName }
+        let initial = frontmostIndex ?? (isKeyboardSession || list.isEmpty ? nil : 0)
         chooseApplication(initial)
-        if let initial { chooseRowForTheUser(initial) }
+        if let initial {
+            chooseRowForTheUser(initial)
+        } else if isKeyboardSession {
+            clearApplicationRowForTheUser()
+        }
     }
 
     private func chooseRowForTheUser(_ row: Int) {
@@ -328,9 +410,102 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         isChoosingForTheUser = false
     }
 
+    private func clearApplicationRowForTheUser() {
+        isChoosingForTheUser = true
+        applicationsTable.deselectAll(nil)
+        isChoosingForTheUser = false
+    }
+
     func close() {
         quitting = nil
         panel.orderOut(nil)
+        keyboardRow = nil
+        hasMovedKeyboardRow = false
+        lastKeyboardLetter = nil
+        if isKeyboardSession {
+            isKeyboardSession = false
+            onKeyboardSessionEnded?()
+        }
+    }
+
+    // MARK: The switching keys
+
+    /// The switching keys were pressed where macOS has nothing to switch between. The panel
+    /// is the same one, with the row after the window in front already chosen.
+    func beginKeyboardSession(applications: [ListedApplication], frontmostName: String?, below anchor: NSRect, step: Int = 1) {
+        close()
+        isKeyboardSession = true
+        show(applications: applications, hasPermission: true, frontmostName: frontmostName, below: anchor)
+        keyboardStep = step
+        keyboardRow = currentApplication.flatMap { Self.nextKeyboardRow(after: nil, in: $0.windows, step: step) }
+        windowsTable.reloadData()
+    }
+
+    /// One row down the list, or up it for a negative step, going round.
+    func moveKeyboardSelection(by step: Int) {
+        guard isKeyboardSession, let application = currentApplication,
+              let next = Self.nextKeyboardRow(after: keyboardRow, in: application.windows, step: step) else { return }
+        lastKeyboardLetter = nil
+        showKeyboardRow(next)
+    }
+
+    /// To the first row starting with this letter, or on from the row a press of it reached.
+    func jumpKeyboardSelection(to letter: Character) {
+        guard isKeyboardSession, let application = currentApplication,
+              let next = Self.keyboardRow(startingWith: letter,
+                                          after: lastKeyboardLetter == letter ? keyboardRow : nil,
+                                          in: application.windows) else { return }
+        lastKeyboardLetter = letter
+        showKeyboardRow(next)
+    }
+
+    private func showKeyboardRow(_ row: Int) {
+        keyboardRow = row
+        hasMovedKeyboardRow = true
+        windowsTable.reloadData()
+        windowsTable.scrollRowToVisible(row)
+    }
+
+    /// The next row starting with this letter that the keys can reach, going round. Without
+    /// a row to go on from, the first in the list.
+    static func keyboardRow(startingWith letter: Character, after row: Int?, in windows: [ListedWindow]) -> Int? {
+        guard !windows.isEmpty else { return nil }
+        let start = row ?? -1
+        return (1...windows.count)
+            .map { (start + $0) % windows.count }
+            .first { windows[$0].isInThisSpace && startsWith(windows[$0].title, letter) }
+    }
+
+    private static func startsWith(_ title: String, _ letter: Character) -> Bool {
+        guard let first = title.first else { return false }
+        return String(first).compare(String(letter), options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) == .orderedSame
+    }
+
+    /// The keys were released. The rest is what a click on that row does.
+    func commitKeyboardSelection() {
+        guard isKeyboardSession else { return }
+        isKeyboardSession = false
+        guard let application = currentApplication, let row = keyboardRow, application.windows.indices.contains(row) else {
+            close()
+            return
+        }
+        apply(rows: [row], of: application)
+    }
+
+    func cancelKeyboardSession() {
+        isKeyboardSession = false
+        close()
+    }
+
+    /// The next row that the keys can reach, going round. It starts after the window in
+    /// front, because that is the one being switched away from.
+    static func nextKeyboardRow(after row: Int?, in windows: [ListedWindow], step: Int = 1) -> Int? {
+        guard !windows.isEmpty else { return nil }
+        let count = windows.count
+        let start = row ?? windows.lastIndex(where: \.isFrontmost) ?? (step > 0 ? -1 : 0)
+        return (1...count)
+            .map { ((start + $0 * step) % count + count) % count }
+            .first { windows[$0].isInThisSpace }
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -390,6 +565,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     func chooseApplication(_ index: Int?) {
         selectedApplication = index
         selection.clear()
+        keyboardRow = nil
         windowsTable.reloadData()
         let problem = index.flatMap { applications[$0].problem }
         problemLabel.stringValue = problem ?? ""
@@ -492,6 +668,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         if tableView === applicationsTable { return ApplicationRowView() }
+        if row == keyboardRow { return KeyboardRowView(hasLine: hasLineAbove(row: row)) }
         return hasLineAbove(row: row) ? SeparatedRowView() : nil
     }
 
@@ -594,7 +771,11 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard (notification.object as? NSTableView) === applicationsTable else { return }
-        if !isChoosingForTheUser { frontmostNameWhenOpened = nil }
+        if !isChoosingForTheUser {
+            frontmostNameWhenOpened = nil
+            hasMovedKeyboardRow = false
+            lastKeyboardLetter = nil
+        }
         let row = applicationsTable.selectedRow
         chooseApplication(row >= 0 ? row : nil)
     }
@@ -742,6 +923,10 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     }
 
     #if DEBUG
+    func setKeyboardRowForTesting(_ row: Int) {
+        keyboardRow = row
+    }
+
     /// Draws the panel into an image, for looking at the design without a screen capture.
     func renderForTesting(appearance: NSAppearance, height: CGFloat) -> NSBitmapImageRep? {
         panel.appearance = appearance

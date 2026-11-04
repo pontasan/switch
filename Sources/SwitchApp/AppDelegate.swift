@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 import os
 
 @MainActor
@@ -11,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var waitingSwitches = 0
     private var terminationObserver: NSObjectProtocol?
     private var permissionObserver: NSObjectProtocol?
+    private var activationObserver: NSObjectProtocol?
+    private var inputSourceObserver: NSObjectProtocol?
+    private var shortcutMonitor: WindowShortcutMonitor?
+    private var refreshAfterSwitch: (() -> Void)?
     /// macOS posts this when an application's Accessibility permission changes.
     private static let permissionChanged = Notification.Name("com.apple.accessibility.api")
     private static let permissionSettle: TimeInterval = 1
@@ -62,6 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let outputPath = IsolatedAppChecks.argument("--quit-key-check", arguments: CommandLine.arguments) {
             Task { @MainActor in
                 await IsolatedAppChecks.runQuitKeyCheck(outputPath: outputPath)
+                NSApp.terminate(nil)
+            }
+            return
+        }
+        if let outputPath = IsolatedAppChecks.argument("--shortcut-check", arguments: CommandLine.arguments) {
+            Task { @MainActor in
+                await IsolatedAppChecks.runShortcutCheck(outputPath: outputPath,
+                                                         bundleIdentifier: IsolatedAppChecks.argument("--bundle-identifier", arguments: CommandLine.arguments),
+                                                         profile: IsolatedAppChecks.argument("--profile", arguments: CommandLine.arguments))
                 NSApp.terminate(nil)
             }
             return
@@ -190,19 +204,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             refreshApplications()
         })
         refreshApplications()
+        // The keys start from the window in front, which a switch has just changed.
+        refreshAfterSwitch = { refreshApplications() }
+        let monitor = WindowShortcutMonitor { [weak self, weak panel, resolver] command in
+            guard let self, let panel else { return }
+            switch command {
+            case .begin, .beginGoingBack:
+                guard let anchor = self.menuBarController?.anchor,
+                      let front = NSWorkspace.shared.frontmostApplication else {
+                    self.shortcutMonitor?.sessionEnded()
+                    return
+                }
+                resolver.attachIfNeeded()
+                panel.beginKeyboardSession(applications: Self.withFrontRefreshed(latestApplications(), front: front, known: self.vscodeLocator.knownWindows),
+                                           frontmostName: front.localizedName,
+                                           below: anchor,
+                                           step: command == .begin ? 1 : -1)
+                refreshApplications()
+            case .advance:
+                panel.moveKeyboardSelection(by: 1)
+            case .retreat:
+                panel.moveKeyboardSelection(by: -1)
+            case .jump(let letter):
+                panel.jumpKeyboardSelection(to: letter)
+            case .commit:
+                panel.commitKeyboardSelection()
+            case .cancel:
+                panel.cancelKeyboardSession()
+            }
+        }
+        shortcutMonitor = monitor
+        panel.onKeyboardSessionEnded = { [weak monitor] in monitor?.sessionEnded() }
+        monitor.setShortcut(WindowShortcut.fromSettings())
+        monitor.setLetterKeys(LetterKeys.current())
+        monitor.setFrontmost(NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        inputSourceObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main
+        ) { [weak monitor] _ in
+            MainActor.assumeIsolated { monitor?.setLetterKeys(LetterKeys.current()) }
+        }
+        monitor.start()
+        // Changing the shortcut means going to System Settings and then leaving it, so this
+        // also sees every change without anything having to look for one.
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak monitor] notification in
+            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            monitor?.setFrontmost(application?.processIdentifier)
+            monitor?.setShortcut(WindowShortcut.fromSettings())
+        }
         // The next panel opens from this reading, so it has to know what was just paired.
         // This happens only when the pairing changes.
         resolver.onChange = { refreshApplications() }
         // Permission can arrive at any time, and using it should not need a relaunch.
         permissionObserver = DistributedNotificationCenter.default().addObserver(
             forName: Self.permissionChanged, object: nil, queue: .main
-        ) { [weak panel, resolver] _ in
+        ) { [weak panel, weak monitor, resolver] _ in
             // The notification can come before the new answer is available, as far as is known here,
             // so the answer is read a moment later.
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.permissionSettle) {
                 MainActor.assumeIsolated {
                     let trusted = AXIsProcessTrusted()
-                    if trusted { resolver.attachIfNeeded() }
+                    if trusted {
+                        resolver.attachIfNeeded()
+                        monitor?.start()
+                    } else {
+                        monitor?.stop()
+                    }
                     panel?.setHasPermission(trusted)
                     refreshApplications()
                 }
@@ -214,6 +282,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 if panel?.isVisible == true { refreshApplications() }
             }
+        }
+    }
+
+    private static func withFrontRefreshed(_ applications: [ListedApplication], front: NSRunningApplication,
+                                           known: [String: ManagedWindow]) -> [ListedApplication] {
+        let onScreen = FrontWindow.onScreenFrontToBack()
+        return applications.map { application in
+            guard application.name == front.localizedName else { return application }
+            var refreshed = application
+            refreshed.windows = FrontWindow.refreshed(application.windows, of: front.processIdentifier, in: onScreen) { row in
+                if case .vscode(let path) = row.selection { return (known[path] as? AccessibilityWindow)?.number }
+                return FrontWindow.number(of: row)
+            }
+            return refreshed
         }
     }
 
@@ -250,6 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 present(error.localizedDescription)
             }
+            refreshAfterSwitch?()
         }
     }
 

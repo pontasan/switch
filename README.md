@@ -16,6 +16,7 @@ Click the menu bar icon, pick an app on the left, then pick a window on the righ
 - **Shift+click** — pick several, numbered in click order. Release Shift and they line up side by side, left to right
 - **Delete** — quit the selected app, the same way its Quit menu does. If the app asks about unsaved work, you still get to answer
 - **Esc** — close the panel
+- **Next window shortcut** (`Command+\`` unless changed in System Settings) — when the front app has one window on show or none, macOS has nothing to switch to, so this panel opens instead. Press again to move down the list, add Shift to move back up, use the up and down arrows, or type a letter or digit to go to the next window starting with it, and release to show that window
 
 Only the app you picked changes. A minimized window you pick comes back, and that app's other windows minimize.
 

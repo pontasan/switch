@@ -13,6 +13,9 @@ struct ListedWindow {
     var group: String? = nil
     /// In front of the application's other windows, or on show in pterm.
     var isFrontmost = false
+    /// False when this row's window is known to be somewhere else, or is not known yet.
+    /// The switching keys stay in the current Space, and such a row is only reached by a click.
+    var isInThisSpace = true
 
     /// What a pin on this row is stored under, the same from one reading to the next.
     /// Other applications say nothing more lasting about a window than its title.
@@ -66,6 +69,53 @@ enum FrontWindow {
             guard let owner = info[kCGWindowOwnerPID as String] as? pid_t,
                   let number = info[kCGWindowNumber as String] as? Int else { return nil }
             return OnScreen(processIdentifier: owner, number: number)
+        }
+    }
+
+    struct VisibleWindow: Equatable {
+        let processIdentifier: pid_t
+        let layer: Int
+        let alpha: Double
+        let size: CGSize
+    }
+
+    /// Below this a window is an application's helper, not something to switch to:
+    /// LINE keeps one of 1 by 1 on screen (measured).
+    private static let smallestWindowSide: CGFloat = 50
+
+    /// Asks the window server alone. The application itself could keep the keyboard waiting.
+    static func visibleOnScreen() -> [VisibleWindow] {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return list.compactMap { info in
+            guard let owner = info[kCGWindowOwnerPID as String] as? pid_t,
+                  let layer = info[kCGWindowLayer as String] as? Int,
+                  let alpha = info[kCGWindowAlpha as String] as? Double,
+                  let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let width = bounds["Width"], let height = bounds["Height"] else { return nil }
+            return VisibleWindow(processIdentifier: owner, layer: layer, alpha: alpha, size: CGSize(width: width, height: height))
+        }
+    }
+
+    /// The windows on show in this Space. A minimized window and another Space's windows are
+    /// not on screen, and palettes and menus are on layers of their own.
+    static func visibleWindowCount(of processIdentifier: pid_t, in windows: [VisibleWindow]) -> Int {
+        windows.filter {
+            $0.processIdentifier == processIdentifier && $0.layer == 0 && $0.alpha > 0
+                && $0.size.width >= smallestWindowSide && $0.size.height >= smallestWindowSide
+        }.count
+    }
+
+    /// What is in front now. The list can be from before the last switch, and the keys start
+    /// from the window in front. pterm says for itself which of its rows are on show.
+    static func refreshed(_ rows: [ListedWindow], of processIdentifier: pid_t, in onScreen: [OnScreen],
+                          number: (ListedWindow) -> Int?) -> [ListedWindow] {
+        let numbers = rows.map(number)
+        let front = Self.number(among: Set(numbers.compactMap { $0 }), of: processIdentifier, in: onScreen)
+        return zip(rows, numbers).map { row, rowNumber in
+            if case .ptermTerminal = row.selection { return row }
+            var marked = row
+            marked.isFrontmost = rowNumber != nil && rowNumber == front
+            return marked
         }
     }
 
@@ -284,10 +334,15 @@ enum WindowListing {
             let support = try VSCodeWindowCatalog.userSupportDirectory()
             let entries = try VSCodeWindowCatalog(supportDirectory: support).openWindows()
             let titles = VSCodeWindowCatalog.displayTitles(for: entries)
+            // Accessibility lists this Space's windows and the minimized ones, and only
+            // these can be told from a window on another Space.
+            let reachable = Set(application.accessibilityWindows().compactMap(\.number))
             let windows = zip(entries, titles).map { entry, title in
-                ListedWindow(title: title, toolTip: entry.target.path,
-                             isMinimized: known.byPath[entry.exactPath]?.isMinimized == true,
-                             selection: .vscode(path: entry.exactPath))
+                let number = (known.byPath[entry.exactPath] as? AccessibilityWindow)?.number
+                return ListedWindow(title: title, toolTip: entry.target.path,
+                                    isMinimized: known.byPath[entry.exactPath]?.isMinimized == true,
+                                    selection: .vscode(path: entry.exactPath),
+                                    isInThisSpace: number.map(reachable.contains) ?? false)
             } + listed(withoutPath: known.withoutPath.filter(\.exists))
             let marked = FrontWindow.marked(windows, of: running.processIdentifier, in: onScreen) { row in
                 if case .vscode(let path) = row.selection {

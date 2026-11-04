@@ -83,7 +83,7 @@ final class MenuBarControllerTests: XCTestCase {
         let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(contentsOf: plistURL), format: nil) as? [String: Any])
         let options = AboutPanel.options(info: plist)
         XCTAssertEqual(options[.applicationVersion] as? String, plist["CFBundleShortVersionString"] as? String)
-        XCTAssertEqual(options[.applicationVersion] as? String, "1.0.0")
+        XCTAssertEqual(options[.applicationVersion] as? String, "1.1.0")
         XCTAssertEqual(options[.version] as? String, "")
     }
 

@@ -72,9 +72,15 @@ final class MenuBarController: NSObject {
         clickForTesting()
     }
 
+    /// Where the icon is on screen, which is what the panel opens below.
+    var anchor: NSRect? {
+        guard let button = statusItem.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
+    }
+
     func clickForTesting() {
-        guard let button = statusItem.button, let window = button.window else { return }
-        onClick(window.convertToScreen(button.convert(button.bounds, to: nil)))
+        guard let anchor else { return }
+        onClick(anchor)
     }
 
     var imageForTesting: NSImage? { statusItem.button?.image }

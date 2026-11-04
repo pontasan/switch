@@ -55,6 +55,15 @@ enum PanelImage {
         panel.reload(applications: list, hasPermission: true, frontmostName: "Code")
         panel.clickWindow(row: 6, shift: true)
         panel.clickWindow(row: 2, shift: true)
+        render(panel, to: prefix)
+        // The same panel with the switching keys on a row.
+        panel.reload(applications: list, hasPermission: true, frontmostName: "Code")
+        panel.setKeyboardRowForTesting(2)
+        render(panel, to: prefix + "-keys")
+        defaults.removePersistentDomain(forName: "com.tranworks.switch.panel-image")
+    }
+
+    private static func render(_ panel: WindowPanelController, to prefix: String) {
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
             guard let look = NSAppearance(named: appearance),
                   let bitmap = panel.renderForTesting(appearance: look, height: 410) else { continue }
@@ -69,7 +78,6 @@ enum PanelImage {
                   let png = rep.representation(using: .png, properties: [:]) else { continue }
             try? png.write(to: URL(fileURLWithPath: "\(prefix)-\(name).png"))
         }
-        defaults.removePersistentDomain(forName: "com.tranworks.switch.panel-image")
     }
 }
 #endif
