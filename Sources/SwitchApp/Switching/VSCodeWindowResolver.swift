@@ -115,6 +115,19 @@ enum VSCodeWindowOrder {
 /// Which windows no saved path can belong to. These get their own rows, so a window that
 /// might still be paired with a path stays out: it would be listed twice.
 enum VSCodeWindowsWithoutPath {
+    /// Which windows have no path, and the saved paths that was worked out from. VS Code saves
+    /// on every change of focus, and a save with the same paths says nothing new. A different
+    /// set may mean a window has just opened a folder: it would then have a row of its own
+    /// and one here, so there is no answer until the next reading.
+    struct Answer<Window> {
+        var windows: [Window] = []
+        var savedPaths: [String]? = nil
+
+        func windows(saved: [String]) -> [Window] {
+            savedPaths == saved.sorted() ? windows : []
+        }
+    }
+
     static func select<Window>(unpairedPaths: Int,
                                unknown: [Window],
                                fromOrder: [Window],
@@ -145,8 +158,8 @@ final class VSCodeWindowResolver {
     /// Which reading is the newest. An older one that finishes later says nothing new.
     private var newestReading = 0
     private var withoutPath: [AccessibilityWindow] = []
-    /// The saved state `withoutPath` was worked out from.
-    private var withoutPathBasis: Date?
+    /// The saved paths `withoutPath` was worked out from.
+    private var withoutPathBasis: [String]?
     /// The windows or their pairing changed, so a list on show is out of date.
     var onChange: (() -> Void)?
 
@@ -167,23 +180,23 @@ final class VSCodeWindowResolver {
         self.supportDirectory = supportDirectory
     }
 
-    /// Empty while the saved state is newer than the answer: a window may have just opened
-    /// a folder, and it would then have a row of its own and one here.
-    func windowsWithoutPath() -> [AccessibilityWindow] {
-        guard withoutPathBasis == modificationDate() else { return [] }
-        return withoutPath.filter { !locator.isKnown(window: $0) }
+    func windowsWithoutPath() -> VSCodeWindowsWithoutPath.Answer<AccessibilityWindow> {
+        VSCodeWindowsWithoutPath.Answer(windows: withoutPath.filter { !locator.isKnown(window: $0) },
+                                        savedPaths: withoutPathBasis)
     }
 
     private func updateWindowsWithoutPath(entries: [VSCodeWindowEntry],
                                           windows: [AccessibilityWindow],
-                                          assigned: [(path: String?, window: AccessibilityWindow)]?,
-                                          basis: Date?) {
+                                          assigned: [(path: String?, window: AccessibilityWindow)]?) {
         let found = VSCodeWindowsWithoutPath.select(
             unpairedPaths: entries.filter { !locator.isKnown(path: $0.exactPath) }.count,
             unknown: windows.filter { !locator.isKnown(window: $0) },
             fromOrder: assigned?.filter { $0.path == nil }.map(\.window) ?? [],
             isSame: { $0.isSame(as: $1) })
-        let changed = found.count != withoutPath.count
+        let basis = entries.map(\.exactPath).sorted()
+        // A list read while the paths differed has none of these rows, even if they are the same.
+        let changed = basis != withoutPathBasis
+            || found.count != withoutPath.count
             || !found.allSatisfy { window in withoutPath.contains { $0.isSame(as: window) } }
         withoutPath = found
         withoutPathBasis = basis
@@ -389,7 +402,7 @@ final class VSCodeWindowResolver {
             Self.log.notice("pair \(pair.path, privacy: .public) document \(document, privacy: .public)")
         }
         #endif
-        updateWindowsWithoutPath(entries: entries, windows: windows, assigned: found, basis: reading.stateDate)
+        updateWindowsWithoutPath(entries: entries, windows: windows, assigned: found)
         if !changes.isEmpty { onChange?() }
         let left = windows.filter { window in
             !locator.isKnown(window: window) && !withoutPath.contains { $0.isSame(as: window) }

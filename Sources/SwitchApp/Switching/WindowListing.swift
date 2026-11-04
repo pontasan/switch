@@ -146,7 +146,7 @@ enum FrontWindow {
 /// The VS Code windows already told apart, read away from the main thread.
 struct VSCodeKnownWindows {
     var byPath: [String: ManagedWindow] = [:]
-    var withoutPath: [AccessibilityWindow] = []
+    var withoutPath = VSCodeWindowsWithoutPath.Answer<AccessibilityWindow>()
 }
 
 /// The list shown when the panel opens. VS Code is listed by path from its own
@@ -343,7 +343,7 @@ enum WindowListing {
                                     isMinimized: known.byPath[entry.exactPath]?.isMinimized == true,
                                     selection: .vscode(path: entry.exactPath),
                                     isInThisSpace: number.map(reachable.contains) ?? false)
-            } + listed(withoutPath: known.withoutPath.filter(\.exists))
+            } + listed(withoutPath: known.withoutPath.windows(saved: entries.map(\.exactPath)).filter(\.exists))
             let marked = FrontWindow.marked(windows, of: running.processIdentifier, in: onScreen) { row in
                 if case .vscode(let path) = row.selection {
                     return (known.byPath[path] as? AccessibilityWindow)?.number

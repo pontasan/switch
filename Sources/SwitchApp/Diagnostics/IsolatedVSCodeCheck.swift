@@ -55,7 +55,7 @@ enum IsolatedVSCodeCheck {
         try? "[{\"key\":\"ctrl+alt+shift+f12\",\"command\":\"workbench.action.moveEditorToNewWindow\"}]"
             .write(to: data.appendingPathComponent("User/keybindings.json"), atomically: true, encoding: .utf8)
 
-        let baseArguments = ["--user-data-dir", data.path, "--extensions-dir", extensions.path, "--disable-extensions", "--disable-updates", "--disable-telemetry"]
+        let baseArguments = ["--user-data-dir", data.path, "--extensions-dir", extensions.path, "--disable-extensions", "--disable-updates", "--disable-telemetry", "--proxy-server=127.0.0.1:9"]
         let opener = VSCodeCLIWindowOpener(extraArguments: baseArguments + ["--disable-workspace-trust"])
 
         func findInstance() -> NSRunningApplication? {
@@ -276,7 +276,7 @@ enum IsolatedVSCodeCheck {
                   "\(entries().filter { detachedLocator.isKnown(path: $0.exactPath) }.count) of \(entries().count)")
             await minimizedAgree(detachedLocator, "detached editor, after a save")
             // Every window has exactly one row: one per saved path, and the rest below the line.
-            let detachedRows = detachedResolver.windowsWithoutPath()
+            let detachedRows = detachedResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath))
             check("detached editor: it is the one window listed without a path", detachedRows.count == 1,
                   "\(detachedRows.map { $0.title ?? "" })")
             check("detached editor: no window is listed twice, and none is missing",
@@ -300,16 +300,16 @@ enum IsolatedVSCodeCheck {
         let emptyResolver = VSCodeWindowResolver(locator: emptyLocator, findApplication: { currentInstance() }, supportDirectory: { data })
         emptyResolver.start()
         await settle(2)
-        check("empty window: none is listed before it opens", emptyResolver.windowsWithoutPath().isEmpty,
-              "\(emptyResolver.windowsWithoutPath().map { $0.title ?? "" })")
+        check("empty window: none is listed before it opens", emptyResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath)).isEmpty,
+              "\(emptyResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath)).map { $0.title ?? "" })")
         await open(["--new-window"])
         await settle(4)
         check("empty window: it opened", managed().accessibilityWindows().count == countBeforeEmpty + 1,
               "\(countBeforeEmpty) -> \(managed().accessibilityWindows().count)")
-        check("empty window: it is listed before VS Code saves", emptyResolver.windowsWithoutPath().count == 1,
-              "\(emptyResolver.windowsWithoutPath().map { $0.title ?? "" })")
+        check("empty window: it is listed before VS Code saves", emptyResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath)).count == 1,
+              "\(emptyResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath)).map { $0.title ?? "" })")
         await flip(2)
-        let emptyRows = emptyResolver.windowsWithoutPath()
+        let emptyRows = emptyResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath))
         check("empty window: it is listed after a save", emptyRows.count == 1, "\(emptyRows.map { $0.title ?? "" })")
         check("empty window: every path still pairs", entries().allSatisfy { emptyLocator.isKnown(path: $0.exactPath) },
               "\(entries().filter { emptyLocator.isKnown(path: $0.exactPath) }.count) of \(entries().count)")
@@ -320,7 +320,23 @@ enum IsolatedVSCodeCheck {
             let switcher = WindowSwitcher(locateVSCodeWindow: { try await emptyLocator.locate(path: $0, in: $1) })
             let area = CGRect(x: 60, y: 80, width: 1000, height: 700)
             do {
+                try await switcher.apply([.vscode(path: entries()[0].exactPath)], in: managed(), columnsArea: area)
+                await settle(2)
+                let stateFile = data.appendingPathComponent("User/globalStorage/storage.json")
+                func saved() -> Date? { (try? fileManager.attributesOfItem(atPath: stateFile.path))?[.modificationDate] as? Date }
+                let savedBefore = saved()
                 try await switcher.apply([.direct(empty)], in: managed(), columnsArea: area)
+                // The list is read as soon as a switch ends, while VS Code is saving the change of focus.
+                var readings = 0
+                var withoutTheWindow = 0
+                while readings < 40 {
+                    readings += 1
+                    if !emptyResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath)).contains(where: { $0.isSame(as: empty) }) { withoutTheWindow += 1 }
+                    await settle(0.05)
+                }
+                check("empty window: VS Code saved during the readings", saved() != savedBefore, "\(String(describing: saved()))")
+                check("empty window: it stays listed while VS Code saves a change of focus", withoutTheWindow == 0,
+                      "missing from \(withoutTheWindow) of \(readings) readings")
                 check("empty window: choosing it brings it forward", instance.isActive && !empty.isMinimized)
                 check("empty window: choosing it fills the area", empty.frame == area, "\(String(describing: empty.frame))")
                 check("empty window: choosing it minimizes the others",
@@ -334,8 +350,8 @@ enum IsolatedVSCodeCheck {
             await closeWindow(empty)
             await flip(2)
             check("empty window: it closed and its row went",
-                  managed().accessibilityWindows().count == countBeforeEmpty && emptyResolver.windowsWithoutPath().isEmpty,
-                  "\(managed().accessibilityWindows().count) windows, \(emptyResolver.windowsWithoutPath().count) without")
+                  managed().accessibilityWindows().count == countBeforeEmpty && emptyResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath)).isEmpty,
+                  "\(managed().accessibilityWindows().count) windows, \(emptyResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath)).count) without")
         }
         emptyResolver.stop()
         // Later checks identify windows by their open file, so the detached one comes back.
@@ -533,8 +549,8 @@ enum IsolatedVSCodeCheck {
                 let wrongBefore = await wrongPairs()
                 check("reorder: before any save, no window pairs wrongly", wrongBefore.isEmpty, "\(wrongBefore)")
                 check("reorder: before any save, no window is listed twice",
-                      entries().count + reorderResolver.windowsWithoutPath().count <= managed().accessibilityWindows().count,
-                      "\(entries().count) paths, \(reorderResolver.windowsWithoutPath().count) without, \(managed().accessibilityWindows().count) windows")
+                      entries().count + reorderResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath)).count <= managed().accessibilityWindows().count,
+                      "\(entries().count) paths, \(reorderResolver.windowsWithoutPath().windows(saved: entries().map(\.exactPath)).count) without, \(managed().accessibilityWindows().count) windows")
                 checks.append(Check(name: "reorder: pairs before any save", passed: true,
                                     detail: "\(entries().filter { reorderLocator.isKnown(path: $0.exactPath) }.count) of \(entries().count)"))
                 await flip(3)

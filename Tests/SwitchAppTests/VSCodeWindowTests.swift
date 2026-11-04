@@ -465,6 +465,26 @@ final class VSCodeWindowOrderTests: XCTestCase {
         XCTAssertEqual(withoutPath(unpaired: 1, unknown: ["empty", "maybe a"], fromOrder: ["empty"]), ["empty"])
     }
 
+    func testASaveWithTheSamePathsKeepsTheAnswer() {
+        let answer = VSCodeWindowsWithoutPath.Answer(windows: ["empty"], savedPaths: ["/a", "/b"])
+        XCTAssertEqual(answer.windows(saved: ["/b", "/a"]), ["empty"], "VS Code saves on every change of focus")
+    }
+
+    func testANewPathWithdrawsTheAnswer() {
+        let answer = VSCodeWindowsWithoutPath.Answer(windows: ["empty"], savedPaths: ["/a"])
+        XCTAssertEqual(answer.windows(saved: ["/a", "/b"]), [], "the empty window may have just opened /b")
+    }
+
+    func testAGonePathWithdrawsTheAnswer() {
+        let answer = VSCodeWindowsWithoutPath.Answer(windows: ["empty"], savedPaths: ["/a", "/b"])
+        XCTAssertEqual(answer.windows(saved: ["/a"]), [])
+    }
+
+    func testNothingIsKnownBeforeTheFirstReading() {
+        let answer = VSCodeWindowsWithoutPath.Answer<String>()
+        XCTAssertEqual(answer.windows(saved: []), [])
+    }
+
     // MARK: Titles and the saved list
 
     func testTitlesCheckOnlyNamedWindows() {
