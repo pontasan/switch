@@ -118,7 +118,7 @@ enum RealWindowSelfTest {
     private static func runPanelChecks(windows: [AccessibilityWindow], application: AccessibilityApplication, primaryHeight: CGFloat) async {
         var applied: [[String]] = []
         let panel = WindowPanelController(onApply: { _, chosen in applied.append(chosen.map(\.title)) },
-                                          onRequestPermission: {}, onQuit: {})
+                                          onRequestPermission: {})
         let listed = ListedApplication(
             name: "Fixture", icon: nil,
             windows: ["a", "b", "c"].map {
@@ -169,6 +169,29 @@ enum RealWindowSelfTest {
         let anchor = NSRect(x: icon.x - 15, y: buttonWindow.frame.minY, width: 30, height: buttonWindow.frame.height)
         func open() {
             panel.show(applications: [listed], hasPermission: true, frontmostName: "Fixture", below: anchor)
+        }
+
+        // The setting that opens the panel in the center of the display, whatever its height.
+        let centered = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, centersPanel: { true })
+        let screens = NSScreen.screens
+        if let index = WindowLayout.screenIndex(containing: NSPoint(x: anchor.midX, y: anchor.midY), in: screens.map(\.frame)) {
+            let display = screens[index].frame
+            func isCentered() -> Bool {
+                abs(centered.frameForTesting.midX - display.midX) <= 1 && abs(centered.frameForTesting.midY - display.midY) <= 1
+            }
+            centered.show(applications: [listed], hasPermission: true, frontmostName: "Fixture", below: anchor)
+            await settle(0.2)
+            let height = centered.frameForTesting.height
+            check("centered panel: in the center of the display", isCentered(), "\(centered.frameForTesting) on \(display)")
+            var longer = listed
+            longer.windows += ["d", "e", "f", "g"].map {
+                ListedWindow(title: $0, toolTip: nil, isMinimized: false, selection: .direct(windows[0]))
+            }
+            centered.update(applications: [longer])
+            await settle(0.2)
+            check("centered panel: grows with what it lists", centered.frameForTesting.height > height, "\(height) -> \(centered.frameForTesting.height)")
+            check("centered panel: still in the center after growing", isCentered(), "\(centered.frameForTesting) on \(display)")
+            centered.close()
         }
 
         // A second status item can land where it cannot be clicked, such as behind the
@@ -534,6 +557,29 @@ enum RealWindowSelfTest {
         } else {
             check("separation: has a minimized window", false)
         }
+
+        // The settings: a window keeps its own size and place, and the others stay out.
+        try? await switcher.apply([.direct(all[0])], in: application, columnsArea: area)
+        await settle(2.2)
+        let keeping = WindowSwitcher(locateVSCodeWindow: { _, _ in fatalError("No VS Code in this test") }, minimizesOtherWindows: false)
+        let ownFrame = CGRect(x: area.minX + 40, y: area.minY + 40, width: 500, height: 350)
+        try? all[1].setFrame(ownFrame)
+        await settle()
+        let frontFrame = all[0].frame
+        do {
+            try await keeping.apply([.direct(all[1])], in: application, columnsArea: nil)
+            check("settings off: completes without error", true)
+        } catch {
+            check("settings off: completes without error", false, error.localizedDescription)
+        }
+        await settle(2.2)
+        check("settings off: the chosen window comes back", !all[1].isMinimized)
+        check("settings off: the chosen window keeps its size and place", near(all[1].frame, ownFrame), String(describing: all[1].frame))
+        check("settings off: the other window is not minimized", !all[0].isMinimized)
+        check("settings off: the other window keeps its size and place", frontFrame.map { near(all[0].frame, $0) } ?? false, String(describing: all[0].frame))
+        check("settings off: a window in the Dock stays there", all[3].isMinimized)
+        try? await switcher.apply([.direct(all[0])], in: application, columnsArea: area)
+        await settle(2.2)
 
         // A window that cannot be resized.
         let fixedManaged = AccessibilityApplication(application: fixed)

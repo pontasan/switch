@@ -260,7 +260,7 @@ enum IsolatedAppChecks {
                     monitor?.setSwitching(nil)
                 }
             }
-        }, onRequestPermission: {}, onQuit: {})
+        }, onRequestPermission: {})
         let anchor = NSRect(x: area.midX, y: area.maxY, width: 30, height: 0)
         func listed() -> [ListedApplication] {
             let list = [ListedApplication(name: "Fixture", icon: nil,
@@ -571,7 +571,7 @@ enum IsolatedAppChecks {
             }
             MainActor.assumeIsolated { pendingTermination[quit.processIdentifier] = stillListed }
         }
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         let screen = NSScreen.main?.visibleFrame ?? .zero
         panel.show(applications: listed, hasPermission: true, frontmostName: "Fixture 1",
                    below: NSRect(x: screen.midX, y: screen.maxY, width: 30, height: 0))

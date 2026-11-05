@@ -429,6 +429,25 @@ enum IsolatedVSCodeCheck {
         if list.count >= 4 {
             await select([list[0]], "one known window")
             await select([list[1], list[2]], "two known windows")
+            // The settings off: the two on show stay as they are, and the third keeps its own frame.
+            let onShow = managed().accessibilityWindows().filter { !$0.isMinimized }
+            let onShowFrames = onShow.map(\.frame)
+            let thirdFolder = list[3].exactPath.precomposedStringWithCanonicalMapping
+            let thirdBefore = managed().accessibilityWindows().first { document($0).contains(thirdFolder + "/") }?.frame
+            let keeping = WindowSwitcher(locateVSCodeWindow: { try await locator.locate(path: $0, in: $1) }, minimizesOtherWindows: false)
+            do {
+                try await keeping.apply([.vscode(path: list[3].exactPath)], in: managed(), columnsArea: nil)
+                check("settings off: completes", true)
+            } catch {
+                check("settings off: completes", false, error.localizedDescription)
+            }
+            await settle(3.5)
+            let afterKeeping = managed().accessibilityWindows().filter { !$0.isMinimized }
+            check("settings off: the others stay on show", afterKeeping.count == onShow.count + 1, "\(onShow.count) -> \(afterKeeping.count)")
+            check("settings off: the others keep their frames", zip(onShow, onShowFrames).allSatisfy { $0.frame == $1 }, "\(onShowFrames) -> \(onShow.map(\.frame))")
+            let third = afterKeeping.first { document($0).contains(thirdFolder + "/") }
+            check("settings off: the chosen window is on show", third != nil, "\(afterKeeping.map(document))")
+            check("settings off: the chosen window keeps its frame", third?.frame == thirdBefore, "\(String(describing: thirdBefore)) -> \(String(describing: third?.frame))")
             let japanese = list.first { $0.exactPath.precomposedStringWithCanonicalMapping.hasSuffix("\u{30B5}\u{30FC}\u{30D0}") }
             check("the Japanese folder is listed", japanese != nil, "\(list.map(\.displayName))")
             if let japanese {

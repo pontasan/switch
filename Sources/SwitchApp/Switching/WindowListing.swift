@@ -70,10 +70,18 @@ struct SwitchInFlight {
     let applicationIdentifier: String
     let processIdentifier: pid_t?
     let chosen: [ListedWindow]
+    var minimizesOtherWindows = true
 
     /// pterm shows all its chosen terminals in its one window.
     var windowCountWhenDone: Int {
         chosen.contains { if case .ptermTerminal = $0.selection { return true } else { return false } } ? 1 : chosen.count
+    }
+
+    /// What the keys go by in place of the screen until the windows have finished minimizing.
+    /// A switch that minimizes nothing has nothing to wait for, and the screen stays true.
+    var settling: (processIdentifier: pid_t, windowCount: Int)? {
+        guard minimizesOtherWindows, let processIdentifier else { return nil }
+        return (processIdentifier, windowCountWhenDone)
     }
 
     /// Only the windows of this Space are minimized by a switch, and pterm says for itself
@@ -89,7 +97,7 @@ struct SwitchInFlight {
                 marked.isFrontmost = isChosen
                 if isChosen {
                     marked.isMinimized = false
-                } else if row.isInThisSpace {
+                } else if row.isInThisSpace, minimizesOtherWindows {
                     marked.isMinimized = true
                 }
                 return marked

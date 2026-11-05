@@ -76,7 +76,8 @@ struct WindowSwitchError: LocalizedError, Equatable {
 
 /// Applies a selection: the chosen windows come to the front and share the whole
 /// area in equal columns (a single window fills it), and the application's other
-/// windows are minimized. Windows of other applications are never touched.
+/// windows are minimized. Arranging and minimizing can each be turned off. Windows of
+/// other applications are never touched.
 ///
 /// Not on the main thread: every request waits for the application's answer, and an
 /// application minimizing windows takes seconds to give one. The menu must not wait for that.
@@ -95,8 +96,10 @@ struct WindowSwitcher {
     var showPtermTerminals: ([String], ManagedApplication) async throws -> ManagedWindow = { terminals, application in
         try await PtermSelection.show(terminals: terminals, in: application)
     }
+    var minimizesOtherWindows = true
 
-    func apply(_ selection: [SelectedWindow], in application: ManagedApplication, columnsArea: CGRect) async throws {
+    /// Without an area, the chosen windows keep the size and place they have.
+    func apply(_ selection: [SelectedWindow], in application: ManagedApplication, columnsArea: CGRect?) async throws {
         let start = Date()
         func elapsed() -> Int { Int(Date().timeIntervalSince(start) * 1000) }
         let chosen = try await resolve(selection, in: application)
@@ -110,7 +113,7 @@ struct WindowSwitcher {
         Self.log.notice("restored \(restoring.count) windows at \(elapsed()) ms")
         // A full screen window owns its Space and cannot be given a frame.
         let arranged = chosen.filter { !$0.isFullScreen }
-        if !arranged.isEmpty {
+        if let columnsArea, !arranged.isEmpty {
             for (window, frame) in zip(arranged, WindowLayout.columns(count: arranged.count, in: columnsArea)) {
                 try await retryingWhileBusy(window) { try window.setFrame(frame) }
             }
@@ -130,6 +133,7 @@ struct WindowSwitcher {
             }
         }
         Self.log.notice("raised at \(elapsed()) ms")
+        guard minimizesOtherWindows else { return }
 
         // One failure does not stop the rest; every failure is reported.
         var failures: [String] = []

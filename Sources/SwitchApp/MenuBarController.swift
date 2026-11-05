@@ -28,9 +28,11 @@ final class MenuBarController: NSObject {
     private let statusItem: NSStatusItem
     private let onClick: (NSRect) -> Void
     private let launchAtLogin: LaunchAtLogin?
+    private let settings: SwitchSettings?
 
-    init(statusBar: NSStatusBar = .system, launchAtLogin: LaunchAtLogin? = nil, onClick: @escaping (NSRect) -> Void) {
+    init(statusBar: NSStatusBar = .system, launchAtLogin: LaunchAtLogin? = nil, settings: SwitchSettings? = nil, onClick: @escaping (NSRect) -> Void) {
         self.launchAtLogin = launchAtLogin
+        self.settings = settings
         statusItem = statusBar.statusItem(withLength: NSStatusItem.squareLength)
         self.onClick = onClick
         super.init()
@@ -44,14 +46,19 @@ final class MenuBarController: NSObject {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
-    static func makeMenu(launchAtLogin: LaunchAtLogin? = nil) -> NSMenu {
+    static func makeMenu(launchAtLogin: LaunchAtLogin? = nil, settings: SwitchSettings? = nil) -> NSMenu {
         let menu = NSMenu(title: "Switch")
         let aboutItem = NSMenuItem(title: aboutTitle, action: #selector(AboutPanel.show), keyEquivalent: "")
         aboutItem.target = AboutPanel.shared
         menu.addItem(aboutItem)
         menu.addItem(.separator())
+        if let settings {
+            menu.addItem(settings.makeMenuItem())
+        }
         if let launchAtLogin {
             menu.addItem(launchAtLogin.makeMenuItem())
+        }
+        if settings != nil || launchAtLogin != nil {
             menu.addItem(.separator())
         }
         let quitItem = NSMenuItem(title: quitTitle, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -64,7 +71,7 @@ final class MenuBarController: NSObject {
         guard let button = statusItem.button else { return }
         if NSApp.currentEvent?.type == .rightMouseUp {
             // Assigning a menu makes every click open it, so it is set only for this one.
-            statusItem.menu = Self.makeMenu(launchAtLogin: launchAtLogin)
+            statusItem.menu = Self.makeMenu(launchAtLogin: launchAtLogin, settings: settings)
             button.performClick(nil)
             statusItem.menu = nil
             return

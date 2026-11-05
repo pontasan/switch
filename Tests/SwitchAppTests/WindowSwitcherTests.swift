@@ -199,6 +199,44 @@ final class WindowSwitcherTests: XCTestCase {
         XCTAssertEqual(log.events, ["frame chosen", "activate", "raise chosen", "minimize other"])
     }
 
+    func testWithoutAnAreaTheChosenWindowsKeepTheirSizeAndPlace() async throws {
+        let log = EventLog()
+        let application = FakeApplication(log: log)
+        let chosen = FakeWindow("chosen", minimized: true, log: log), other = FakeWindow("other", log: log)
+        application.all = [other, chosen]
+
+        try await noVSCode.apply([.direct(chosen)], in: application, columnsArea: nil)
+
+        XCTAssertNil(chosen.frame)
+        XCTAssertEqual(log.events, ["restore chosen", "activate", "raise chosen", "minimize other"])
+    }
+
+    func testWithMinimizingOffTheOtherWindowsStayAsTheyAre() async throws {
+        let log = EventLog()
+        let application = FakeApplication(log: log)
+        let chosen = FakeWindow("chosen", log: log), other = FakeWindow("other", log: log), idle = FakeWindow("idle", minimized: true, log: log)
+        application.all = [other, chosen, idle]
+        let switcher = WindowSwitcher(locateVSCodeWindow: { _, _ in fatalError("No VS Code in this test") }, minimizesOtherWindows: false)
+
+        try await switcher.apply([.direct(chosen)], in: application, columnsArea: area)
+
+        XCTAssertFalse(other.isMinimized)
+        XCTAssertTrue(idle.isMinimized, "a window already in the Dock stays there")
+        XCTAssertEqual(log.events, ["frame chosen", "activate", "raise chosen"])
+    }
+
+    func testWithBothOffTheOnlyThingThatChangesIsWhatIsInFront() async throws {
+        let log = EventLog()
+        let application = FakeApplication(log: log)
+        let first = FakeWindow("first", log: log), second = FakeWindow("second", log: log), other = FakeWindow("other", log: log)
+        application.all = [second, other, first]
+        let switcher = WindowSwitcher(locateVSCodeWindow: { _, _ in fatalError("No VS Code in this test") }, minimizesOtherWindows: false)
+
+        try await switcher.apply([.direct(first), .direct(second)], in: application, columnsArea: nil)
+
+        XCTAssertEqual(log.events, ["activate", "raise second", "raise first"], "the first chosen ends up on top")
+    }
+
     func testSeveralChosenWindowsShareTheAreaInClickOrder() async throws {
         let log = EventLog()
         let application = FakeApplication(log: log)
@@ -547,7 +585,7 @@ final class WindowPanelControllerTests: XCTestCase {
         var applied: [(String, [String])] = []
         let panel = WindowPanelController(
             onApply: { application, windows in applied.append((application.name, windows.map(\.title))) },
-            onRequestPermission: {}, onQuit: {})
+            onRequestPermission: {})
         panel.reload(applications: [listed("Chrome", ["c1", "c2"]), listed("Code", ["a", "b", "c"])],
                      hasPermission: true, frontmostName: "Code")
         return (panel, { applied })
@@ -563,14 +601,14 @@ final class WindowPanelControllerTests: XCTestCase {
     }
 
     func testWindowsWithoutAPathArePartedByALineBelowTheOthers() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         panel.reload(applications: [vscode(paths: ["a", "b"], withoutPath: ["Welcome"])], hasPermission: true, frontmostName: "Code")
         XCTAssertEqual(panel.windowsRowCountForTesting, 3)
         XCTAssertEqual(panel.separatedRowForTesting, 2)
     }
 
     func testBothKindsOfWindowHaveASectionHeadingEach() throws {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         panel.reload(applications: [vscode(paths: ["a", "b"], withoutPath: ["Welcome", "Other"])], hasPermission: true, frontmostName: "Code")
         XCTAssertEqual((0..<4).map { panel.sectionHeading(forRow: $0) },
                        [WindowPanelController.workspacesHeading, nil, WindowPanelController.otherWindowsHeading, nil])
@@ -579,7 +617,7 @@ final class WindowPanelControllerTests: XCTestCase {
     }
 
     func testOneKindOfWindowHasNoHeading() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         panel.reload(applications: [vscode(paths: ["a"], withoutPath: [])], hasPermission: true, frontmostName: "Code")
         XCTAssertNil(panel.sectionHeading(forRow: 0))
         panel.reload(applications: [vscode(paths: [], withoutPath: ["Welcome"])], hasPermission: true, frontmostName: "Code")
@@ -587,7 +625,7 @@ final class WindowPanelControllerTests: XCTestCase {
     }
 
     func testAClickOnAHeadingOrTheLineChoosesNothing() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         panel.reload(applications: [vscode(paths: ["a", "b"], withoutPath: ["Welcome"])], hasPermission: true, frontmostName: "Code")
         let heading = WindowPanelController.sectionHeadingHeight
         let line = WindowPanelController.separatorHeight
@@ -600,7 +638,7 @@ final class WindowPanelControllerTests: XCTestCase {
     }
 
     func testNoLineWithoutBothKindsOfWindow() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         panel.reload(applications: [vscode(paths: ["a"], withoutPath: [])], hasPermission: true, frontmostName: "Code")
         XCTAssertNil(panel.separatedRowForTesting)
         panel.reload(applications: [vscode(paths: [], withoutPath: ["Welcome"])], hasPermission: true, frontmostName: "Code")
@@ -611,14 +649,14 @@ final class WindowPanelControllerTests: XCTestCase {
 
     func testClickingAWindowWithoutAPathAppliesThatRow() {
         var applied: [String] = []
-        let panel = WindowPanelController(onApply: { _, windows in applied = windows.map(\.title) }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, windows in applied = windows.map(\.title) }, onRequestPermission: {})
         panel.reload(applications: [vscode(paths: ["a", "b"], withoutPath: ["Welcome"])], hasPermission: true, frontmostName: "Code")
         panel.clickWindow(row: 2, shift: false)
         XCTAssertEqual(applied, ["Welcome"])
     }
 
     func testASelectionIsDroppedWhenAWindowMovesBetweenTheParts() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         panel.reload(applications: [vscode(paths: ["a", "b"], withoutPath: ["Welcome"])], hasPermission: true, frontmostName: "Code")
         panel.clickWindow(row: 2, shift: true)
         panel.update(applications: [vscode(paths: ["a", "b", "c"], withoutPath: [])])
@@ -668,10 +706,47 @@ final class WindowPanelControllerTests: XCTestCase {
         XCTAssertEqual(WindowPanelController.panelHeight(contentHeight: 50, available: 1000), 50)
     }
 
+    func testThePanelBelowTheIconStaysWhereItWas() {
+        let visible = NSRect(x: 0, y: 80, width: 1000, height: 620)
+        let anchor = NSRect(x: 490, y: 700, width: 20, height: 24)
+        XCTAssertEqual(WindowPanelController.panelFrameBelow(anchor: anchor, width: 600, contentHeight: 300, visible: visible),
+                       NSRect(x: 200, y: 400, width: 600, height: 300))
+        let atTheEdge = NSRect(x: 970, y: 700, width: 20, height: 24)
+        XCTAssertEqual(WindowPanelController.panelFrameBelow(anchor: atTheEdge, width: 600, contentHeight: 300, visible: visible).maxX, 1000)
+        XCTAssertEqual(WindowPanelController.panelFrameBelow(anchor: anchor, width: 600, contentHeight: 900, visible: visible).minY, 80)
+    }
+
+    func testTheCenteredPanelIsInTheCenterOfTheDisplayWhateverItsHeight() {
+        let screen = NSRect(x: 0, y: 0, width: 3840, height: 1080)
+        let visible = NSRect(x: 0, y: 70, width: 3840, height: 985)
+        for height: CGFloat in [100, 300, 500] {
+            let frame = WindowPanelController.centeredPanelFrame(width: 600, contentHeight: height, screen: screen, visible: visible)
+            XCTAssertEqual(frame.midX, screen.midX)
+            XCTAssertEqual(frame.midY, screen.midY)
+            XCTAssertEqual(frame.height, height)
+        }
+    }
+
+    func testTheCenteredPanelStaysClearOfTheMenuBarAndTheDock() {
+        let screen = NSRect(x: 0, y: 0, width: 1000, height: 1000)
+        let visible = NSRect(x: 0, y: 300, width: 1000, height: 675)
+        let moved = WindowPanelController.centeredPanelFrame(width: 600, contentHeight: 600, screen: screen, visible: visible)
+        XCTAssertEqual(moved.minY, 300, "pushed up off the Dock")
+        XCTAssertEqual(moved.height, 600)
+        let tall = WindowPanelController.centeredPanelFrame(width: 600, contentHeight: 2000, screen: screen, visible: visible)
+        XCTAssertEqual(tall, NSRect(x: 200, y: 300, width: 600, height: 675), "no taller than the display has room for")
+    }
+
+    func testTheCenteredPanelIsOnADisplayLeftOfThePrimary() {
+        let screen = NSRect(x: -1920, y: 200, width: 1920, height: 1080)
+        let frame = WindowPanelController.centeredPanelFrame(width: 600, contentHeight: 400, screen: screen, visible: screen)
+        XCTAssertEqual(frame, NSRect(x: -1260, y: 540, width: 600, height: 400))
+    }
+
     private func shownPanel(windowCount: Int) throws -> (WindowPanelController, NSRect) {
         let screen = try XCTUnwrap(NSScreen.main)
         let visible = screen.visibleFrame
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         let titles = (0..<windowCount).map { "w\($0)" }
         panel.show(applications: [listed("Many", titles)], hasPermission: true, frontmostName: "Many",
                    below: NSRect(x: visible.midX, y: visible.maxY, width: 30, height: 20))
@@ -696,7 +771,7 @@ final class WindowPanelControllerTests: XCTestCase {
 
     private func shownPanel(_ applications: [ListedApplication], frontmost: String) throws -> (WindowPanelController, NSRect) {
         let visible = try XCTUnwrap(NSScreen.main).visibleFrame
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         panel.show(applications: applications, hasPermission: true, frontmostName: frontmost,
                    below: NSRect(x: visible.midX, y: visible.maxY, width: 30, height: 20))
         return (panel, visible)
@@ -756,7 +831,7 @@ final class WindowPanelControllerTests: XCTestCase {
     }
 
     func testAnApplicationJustStartedIsChosenWhenTheUpdateBringsIt() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         let old = listed("Old", ["o"]), new = listed("New", ["n"])
         panel.reload(applications: [old], hasPermission: true, frontmostName: "New")
         XCTAssertEqual(panel.applications[panel.selectedApplication ?? -1].name, "Old")
@@ -765,7 +840,7 @@ final class WindowPanelControllerTests: XCTestCase {
     }
 
     func testAnUpdateDoesNotUndoTheUsersChoice() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         let a = listed("A", ["a"]), b = listed("B", ["b"]), c = listed("C", ["c"])
         panel.reload(applications: [a, b], hasPermission: true, frontmostName: "C")
         panel.selectApplicationRowForTesting(1)
@@ -774,7 +849,7 @@ final class WindowPanelControllerTests: XCTestCase {
     }
 
     func testAfterQuittingTheNextUpdateDoesNotJumpBackToTheFrontmost() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         let a = listed("A", ["a"]), b = listed("B", ["b"]), c = listed("C", ["c"])
         panel.reload(applications: [a, b, c], hasPermission: true, frontmostName: "A")
         panel.selectApplicationRowForTesting(1)
@@ -865,7 +940,7 @@ final class WindowPanelControllerTests: XCTestCase {
     }
 
     func testTheNextApplicationTakesTheRowOfOneThatQuit() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {})
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
         let a = listed("A", ["a"]), b = listed("B", ["b"]), c = listed("C", ["c"])
         panel.reload(applications: [a, b, c], hasPermission: true, frontmostName: "B")
         panel.update(applications: [a, c])
@@ -904,7 +979,7 @@ final class WindowPanelControllerTests: XCTestCase {
     }
 
     private func panel(pins: PinnedApplications) -> WindowPanelController {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {}, pins: pins)
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, pins: pins)
         panel.reload(applications: [listed("Alpha", ["a"]), listed("Beta", ["b1", "b2"]), listed("Gamma", ["g"])],
                      hasPermission: true, frontmostName: "Beta")
         return panel
@@ -1021,7 +1096,7 @@ final class WindowPinTests: XCTestCase {
 
     func testPanelMovesThePinnedRowAndKeepsTheShiftSelection() {
         var applied: [String] = []
-        let panel = WindowPanelController(onApply: { _, rows in applied = rows.map(\.title) }, onRequestPermission: {}, onQuit: {},
+        let panel = WindowPanelController(onApply: { _, rows in applied = rows.map(\.title) }, onRequestPermission: {},
                                           pins: PinnedApplications(defaults: defaults()))
         panel.reload(applications: [application([direct("a"), direct("b"), direct("c")])], hasPermission: true, frontmostName: "App")
         panel.clickWindow(row: 1, shift: true)
@@ -1036,7 +1111,7 @@ final class WindowPinTests: XCTestCase {
     }
 
     func testAReadingKeepsThePinnedOrder() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {},
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {},
                                           pins: PinnedApplications(defaults: defaults()))
         let rows = [direct("a"), direct("b")]
         panel.reload(applications: [application(rows)], hasPermission: true, frontmostName: "App")
@@ -1046,7 +1121,7 @@ final class WindowPinTests: XCTestCase {
     }
 
     func testEachWorkspaceHasItsHeadingAndALineBetween() {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {},
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {},
                                           pins: PinnedApplications(defaults: defaults()))
         panel.reload(applications: [application([terminal(1, "A"), terminal(2, "A"), terminal(3, "B")])],
                      hasPermission: true, frontmostName: "App")

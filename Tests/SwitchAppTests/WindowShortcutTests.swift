@@ -316,6 +316,24 @@ final class SwitchInFlightTests: XCTestCase {
         XCTAssertEqual(rows.map(\.isFrontmost), [true])
     }
 
+    func testWithMinimizingOffTheOtherWindowsAreNotMarkedMinimized() {
+        let application = ListedApplication(name: "Code", icon: nil,
+                                            windows: [row("a", front: true), row("b", minimized: true), row("c", minimized: true)],
+                                            problem: nil, application: StubApplication(), bundleIdentifier: "code")
+        let inFlight = SwitchInFlight(applicationIdentifier: "code", processIdentifier: 1, chosen: [row("b")], minimizesOtherWindows: false)
+        let rows = inFlight.applied(to: [application])[0].windows
+        XCTAssertEqual(rows.map(\.isFrontmost), [false, true, false])
+        XCTAssertEqual(rows.map(\.isMinimized), [false, false, true])
+    }
+
+    func testOnlyASwitchThatMinimizesGivesTheKeysSomethingToGoBy() {
+        let minimizing = SwitchInFlight(applicationIdentifier: "code", processIdentifier: 7, chosen: [row("a")]).settling
+        XCTAssertEqual(minimizing?.processIdentifier, 7)
+        XCTAssertEqual(minimizing?.windowCount, 1)
+        XCTAssertNil(SwitchInFlight(applicationIdentifier: "code", processIdentifier: 7, chosen: [row("a")], minimizesOtherWindows: false).settling)
+        XCTAssertNil(SwitchInFlight(applicationIdentifier: "code", processIdentifier: nil, chosen: [row("a")]).settling)
+    }
+
     func testHowManyWindowsASwitchLeaves() {
         func count(_ chosen: [ListedWindow]) -> Int {
             SwitchInFlight(applicationIdentifier: "code", processIdentifier: 1, chosen: chosen).windowCountWhenDone
@@ -402,7 +420,7 @@ final class KeyboardSessionTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         let pins = PinnedApplications(defaults: defaults)
         return (WindowPanelController(onApply: { [weak self] _, windows in self?.applied = windows.map(\.title) },
-                                      onRequestPermission: {}, onQuit: {}, pins: pins), pins)
+                                      onRequestPermission: {}, pins: pins), pins)
     }
 
     private let anchor = NSRect(x: 100, y: 800, width: 20, height: 20)

@@ -51,7 +51,7 @@ enum PanelImage {
                         ["alpha-app", "golf-task", "kilo-app", "mike-web", "orange-app", "papa-ai", "server", "sierra-ai"],
                         withoutPath: ["Welcome", "main.py — server [SSH: host]"])
         ]
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, onQuit: {}, pins: pins)
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, pins: pins, settingsMenu: { NSMenu() })
         panel.reload(applications: list, hasPermission: true, frontmostName: "Code")
         panel.clickWindow(row: 6, shift: true)
         panel.clickWindow(row: 2, shift: true)

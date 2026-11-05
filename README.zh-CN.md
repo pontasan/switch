@@ -18,7 +18,7 @@
 - **Esc** — 关闭面板
 - **下一个窗口快捷键**（未在系统设置中更改时为 ``Command+` ``） — 当前应用显示的窗口不超过 1 个时，macOS 没有可切换的窗口，因此会改为打开此面板。再次按下可移到下一行，加按 Shift 可回到上一行，也可使用上下箭头键。按字母或数字可移到以该字符开头的行，再次按同一字符可移到下一个匹配行。松开按键即可显示该窗口
 
-只有你选择的应用会发生变化。选择已最小化的窗口时，它会恢复显示，该应用的其他窗口则会最小化。
+只有你选择的应用会发生变化。选择已最小化的窗口时，它会恢复显示，该应用的其他窗口则会最小化。 铺满屏幕和最小化都可以在[设置](#设置)中分别关闭。
 
 大多数应用会按窗口标题列出当前空间中的窗口和已最小化的窗口。
 
@@ -39,6 +39,26 @@ Switch 只显示你选择的窗口，并最小化其余窗口。之后按下一�
 原生支持 [pterm](https://github.com/pontasan/pterm)，一款在单个窗口中管理多个终端的终端应用。
 
 获取 pterm：https://github.com/pontasan/pterm
+
+## 设置
+
+可通过右键点击菜单栏图标选择 `Settings`，或点击面板右下角的齿轮进行更改。更改立即生效，重启后仍会保留。
+
+| 右键点击菜单栏图标 | 面板右下角的齿轮 |
+| --- | --- |
+| <img src="Resources/settings-menubar.png" alt="包含 Settings 的右键菜单" width="254"> | <img src="Resources/settings-menu.png" alt="从齿轮打开的设置菜单" width="252"> |
+
+| 设置 | 默认 | 作用 | 适用场景 |
+| --- | --- | --- | --- |
+| `Arrange Windows Automatically` | 开 | 让所选窗口适应屏幕（多个时并排） | 在宽屏显示器或 Apple Vision Pro 虚拟显示器上关闭，可保持窗口的大小和位置 |
+| `Minimize Other Windows` | 开 | 将同一应用的其他窗口收进程序坞 | 需要同时查看其他窗口时关闭。显示 2 个以上窗口时，下一个窗口快捷键由 macOS 处理 |
+| `Show Panel in Center of Display` | 关 | 在显示器中央而不是图标下方打开面板 | 在宽屏显示器等图标离工作位置较远时开启 |
+
+| | |
+| --- | --- |
+| `Arrange Windows Automatically` | <img src="Resources/settings-arrange.svg" alt="Arrange Windows Automatically" width="520"> |
+| `Minimize Other Windows` | <img src="Resources/settings-minimize.svg" alt="Minimize Other Windows" width="520"> |
+| `Show Panel in Center of Display` | <img src="Resources/settings-center.svg" alt="Show Panel in Center of Display" width="520"> |
 
 ## 贴心细节
 

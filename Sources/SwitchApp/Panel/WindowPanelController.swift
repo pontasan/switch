@@ -170,6 +170,9 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     private let onApply: (ListedApplication, [ListedWindow]) -> Void
     private let onRequestPermission: () -> Void
     private let pins: PinnedApplications
+    private let centersPanel: () -> Bool
+    private let settingsMenu: (() -> NSMenu)?
+    private let settingsButton = NSButton()
 
     private(set) var applications: [ListedApplication] = []
     /// The list as it was read. Unpinning a row puts it back where this has it.
@@ -195,12 +198,14 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
 
     init(onApply: @escaping (ListedApplication, [ListedWindow]) -> Void,
          onRequestPermission: @escaping () -> Void,
-         onQuit: @escaping () -> Void,
-         pins: PinnedApplications? = nil) {
+         pins: PinnedApplications? = nil,
+         centersPanel: @escaping () -> Bool = { false },
+         settingsMenu: (() -> NSMenu)? = nil) {
+        self.settingsMenu = settingsMenu
         self.pins = pins ?? PinnedApplications()
+        self.centersPanel = centersPanel
         self.onApply = onApply
         self.onRequestPermission = onRequestPermission
-        self.onQuit = onQuit
         panel = KeyablePanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 380),
                              styleMask: Self.panelStyle,
                              backing: .buffered,
@@ -221,8 +226,6 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         panel.onDeleteKey = { [weak self] in self?.quitChosenApplication() }
         buildContent()
     }
-
-    private let onQuit: () -> Void
 
     /// A title bar has a band of its own, which shows through glass.
     private static var panelStyle: NSWindow.StyleMask {
@@ -310,12 +313,28 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         let anchorPoint = NSPoint(x: anchor.midX, y: anchor.midY)
         let screens = NSScreen.screens
         guard let index = WindowLayout.screenIndex(containing: anchorPoint, in: screens.map(\.frame)) else { return }
-        let visible = screens[index].visibleFrame
-        let top = min(anchor.minY, visible.maxY)
-        let height = Self.panelHeight(contentHeight: contentHeight(), available: top - visible.minY)
+        let screen = screens[index]
         let width = panel.frame.width
+        let frame = centersPanel()
+            ? Self.centeredPanelFrame(width: width, contentHeight: contentHeight(), screen: screen.frame, visible: screen.visibleFrame)
+            : Self.panelFrameBelow(anchor: anchor, width: width, contentHeight: contentHeight(), visible: screen.visibleFrame)
+        panel.setFrame(frame, display: true)
+    }
+
+    static func panelFrameBelow(anchor: NSRect, width: CGFloat, contentHeight: CGFloat, visible: NSRect) -> NSRect {
+        let top = min(anchor.minY, visible.maxY)
+        let height = panelHeight(contentHeight: contentHeight, available: top - visible.minY)
         let x = min(anchor.midX - width / 2, visible.maxX - width)
-        panel.setFrame(NSRect(x: max(visible.minX, x), y: top - height, width: width, height: height), display: true)
+        return NSRect(x: max(visible.minX, x), y: top - height, width: width, height: height)
+    }
+
+    /// In the center of the display itself, moved only as far as it takes to stay clear of
+    /// the menu bar and the Dock.
+    static func centeredPanelFrame(width: CGFloat, contentHeight: CGFloat, screen: NSRect, visible: NSRect) -> NSRect {
+        let height = panelHeight(contentHeight: contentHeight, available: visible.height)
+        let x = min(max((screen.midX - width / 2).rounded(), visible.minX), visible.maxX - width)
+        let y = min(max((screen.midY - height / 2).rounded(), visible.minY), visible.maxY - height)
+        return NSRect(x: x, y: y, width: width, height: height)
     }
 
     /// As tall as what is on show needs, so that scrolling appears only when the
@@ -797,8 +816,17 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         onRequestPermission()
     }
 
-    @objc private func quit() {
-        onQuit()
+    /// The same settings as the right-click menu. The panel stays open behind the menu, and
+    /// moves at once if its place was what changed.
+    @objc private func showSettings() {
+        guard let menu = settingsMenu?() else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: settingsButton.bounds.maxY + 4), in: settingsButton)
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.panel.isVisible else { return }
+                self.placePanel()
+            }
+        }
     }
 
     // MARK: Views
@@ -861,10 +889,16 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         let hintLabel = NSTextField(labelWithString: Self.hint)
         hintLabel.textColor = Self.quietTextColor
         hintLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        let quitButton = NSButton(title: MenuBarController.quitTitle, target: self, action: #selector(quit))
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let footer = NSStackView(views: [hintLabel, spacer, quitButton])
+        settingsButton.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: SwitchSettings.title)
+        settingsButton.imagePosition = .imageOnly
+        settingsButton.isBordered = false
+        settingsButton.toolTip = SwitchSettings.title
+        settingsButton.target = self
+        settingsButton.action = #selector(showSettings)
+        settingsButton.isHidden = settingsMenu == nil
+        let footer = NSStackView(views: [hintLabel, spacer, settingsButton])
         footer.orientation = .horizontal
 
         for view in [permissionBar, problemLabel, lists, footer] {
@@ -908,6 +942,8 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     }
 
     var windowsRowCountForTesting: Int { numberOfRows(in: windowsTable) }
+    var frameForTesting: NSRect { panel.frame }
+    var settingsButtonForTesting: NSButton { settingsButton }
 
     /// What a click on an application's row does.
     func selectApplicationRowForTesting(_ row: Int) {

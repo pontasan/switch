@@ -18,7 +18,7 @@ Click the menu bar icon, pick an app on the left, then pick a window on the righ
 - **Esc** — close the panel
 - **Next window shortcut** (``Command+` `` unless changed in System Settings) — when the front app has one window on show or none, macOS has nothing to switch to, so this panel opens instead. Press again to move down the list, add Shift to move back up, use the up and down arrows, or type a letter or digit to go to the next window starting with it, and release to show that window
 
-Only the app you picked changes. A minimized window you pick comes back, and that app's other windows minimize.
+Only the app you picked changes. A minimized window you pick comes back, and that app's other windows minimize. Filling the screen and minimizing can each be turned off in [Settings](#settings).
 
 Most apps are listed with their window titles, for the current Space and minimized windows.
 
@@ -39,6 +39,26 @@ Switch shows the window you pick and minimizes the rest. From there, press the n
 Natively supports [pterm](https://github.com/pontasan/pterm), a terminal app that manages multiple terminals in a single window.
 
 Get pterm: https://github.com/pontasan/pterm
+
+## Settings
+
+Right-click the menu bar icon and choose `Settings`, or click the gear at the bottom right of the panel. Changes apply right away and stay after a restart.
+
+| Right-click the menu bar icon | Gear at the bottom right of the panel |
+| --- | --- |
+| <img src="Resources/settings-menubar.png" alt="The right-click menu with Settings" width="254"> | <img src="Resources/settings-menu.png" alt="The settings menu opened from the gear" width="252"> |
+
+| Setting | Default | What it does | Useful when |
+| --- | --- | --- | --- |
+| `Arrange Windows Automatically` | on | Fits the chosen windows to the screen, side by side if several | Turn off on a wide display or the Apple Vision Pro virtual display, to keep each window's size and place |
+| `Minimize Other Windows` | on | Sends the app's other windows to the Dock | Turn off to keep other windows in view. With two or more on show, the next window shortcut is left to macOS |
+| `Show Panel in Center of Display` | off | Opens the panel in the center of the display instead of below the menu bar icon | Turn on when the icon is far from where you work, as on a wide display |
+
+| | |
+| --- | --- |
+| `Arrange Windows Automatically` | <img src="Resources/settings-arrange.svg" alt="Arrange Windows Automatically" width="520"> |
+| `Minimize Other Windows` | <img src="Resources/settings-minimize.svg" alt="Minimize Other Windows" width="520"> |
+| `Show Panel in Center of Display` | <img src="Resources/settings-center.svg" alt="Show Panel in Center of Display" width="520"> |
 
 ## Handy Details
 

@@ -18,7 +18,7 @@
 - **Esc** — 패널을 닫습니다
 - **다음 윈도우 단축키**(시스템 설정에서 바꾸지 않았다면 ``Command+` ``) — 앞에 있는 앱에 표시된 윈도우가 1개 이하이면 macOS에는 전환할 윈도우가 없으므로 대신 이 패널이 열립니다. 다시 누르면 다음 행으로, Shift를 함께 누르면 이전 행으로 이동하며, 위아래 화살표 키도 사용할 수 있습니다. 영문자나 숫자를 누르면 해당 문자로 시작하는 행으로 이동하고, 같은 문자를 다시 누르면 다음 행으로 이동합니다. 키에서 손을 떼면 해당 윈도우를 표시합니다
 
-선택한 앱만 변경됩니다. 최소화된 윈도우를 선택하면 복원되고, 해당 앱의 다른 윈도우는 최소화됩니다.
+선택한 앱만 변경됩니다. 최소화된 윈도우를 선택하면 복원되고, 해당 앱의 다른 윈도우는 최소화됩니다. 화면을 채우는 동작과 최소화는 [설정](#설정)에서 각각 끌 수 있습니다.
 
 대부분의 앱은 현재 Space의 윈도우와 최소화된 윈도우를 제목으로 표시합니다.
 
@@ -39,6 +39,26 @@ Switch는 선택한 윈도우만 표시하고 나머지는 최소화합니다. �
 하나의 윈도우에서 여러 터미널을 관리하는 터미널 앱 [pterm](https://github.com/pontasan/pterm)을 기본 지원합니다.
 
 pterm 받기: https://github.com/pontasan/pterm
+
+## 설정
+
+메뉴 막대 아이콘 오른쪽 클릭의 `Settings` 또는 패널 오른쪽 아래의 톱니바퀴에서 바꿀 수 있습니다. 변경 사항은 바로 적용되고 다시 시작해도 유지됩니다.
+
+| 메뉴 막대 아이콘 오른쪽 클릭 | 패널 오른쪽 아래의 톱니바퀴 |
+| --- | --- |
+| <img src="Resources/settings-menubar.png" alt="Settings가 있는 오른쪽 클릭 메뉴" width="254"> | <img src="Resources/settings-menu.png" alt="톱니바퀴에서 연 설정 메뉴" width="252"> |
+
+| 설정 | 기본값 | 의미 | 유용한 경우 |
+| --- | --- | --- | --- |
+| `Arrange Windows Automatically` | 켬 | 선택한 윈도우를 화면에 맞춤(여러 개면 나란히 배치) | 와이드 디스플레이나 Apple Vision Pro 가상 디스플레이에서 끄면 윈도우의 크기와 위치를 유지 |
+| `Minimize Other Windows` | 켬 | 같은 앱의 다른 윈도우를 Dock으로 보냄 | 다른 윈도우도 보면서 작업할 때 끄기. 2개 이상 표시 중이면 다음 윈도우 단축키는 macOS가 처리 |
+| `Show Panel in Center of Display` | 끔 | 패널을 아이콘 아래가 아닌 디스플레이 중앙에 열기 | 와이드 디스플레이처럼 아이콘이 작업 위치에서 멀 때 켜기 |
+
+| | |
+| --- | --- |
+| `Arrange Windows Automatically` | <img src="Resources/settings-arrange.svg" alt="Arrange Windows Automatically" width="520"> |
+| `Minimize Other Windows` | <img src="Resources/settings-minimize.svg" alt="Minimize Other Windows" width="520"> |
+| `Show Panel in Center of Display` | <img src="Resources/settings-center.svg" alt="Show Panel in Center of Display" width="520"> |
 
 ## 편리한 기능
 

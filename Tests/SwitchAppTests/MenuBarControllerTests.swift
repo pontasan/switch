@@ -62,6 +62,73 @@ final class LaunchAtLoginTests: XCTestCase {
 }
 
 @MainActor
+final class SwitchSettingsTests: XCTestCase {
+    private func defaults() -> UserDefaults {
+        let name = "com.tranworks.switch.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    func testTheDefaultsAreWhatSwitchHasAlwaysDone() {
+        let settings = SwitchSettings(defaults: defaults())
+        XCTAssertTrue(settings.arrangesWindows)
+        XCTAssertTrue(settings.minimizesOtherWindows)
+        XCTAssertFalse(settings.centersPanel)
+    }
+
+    func testEachChoiceLastsAndLeavesTheOthersAlone() {
+        let store = defaults()
+        SwitchSettings(defaults: store).toggleArrangesWindows()
+        var next = SwitchSettings(defaults: store)
+        XCTAssertFalse(next.arrangesWindows, "the next launch must keep it")
+        XCTAssertTrue(next.minimizesOtherWindows)
+        XCTAssertFalse(next.centersPanel)
+
+        next.toggleMinimizesOtherWindows()
+        next.toggleCentersPanel()
+        next = SwitchSettings(defaults: store)
+        XCTAssertFalse(next.minimizesOtherWindows)
+        XCTAssertTrue(next.centersPanel)
+
+        next.toggleArrangesWindows()
+        XCTAssertTrue(SwitchSettings(defaults: store).arrangesWindows, "it can be turned back on")
+    }
+
+    func testThePanelHasAWayToTheSettings() {
+        let settings = SwitchSettings(defaults: defaults())
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {},
+                                          settingsMenu: { settings.makeMenu() })
+        XCTAssertFalse(panel.settingsButtonForTesting.isHidden)
+        XCTAssertNotNil(panel.settingsButtonForTesting.image)
+        XCTAssertEqual(panel.settingsButtonForTesting.image?.accessibilityDescription, SwitchSettings.title)
+        XCTAssertEqual(settings.makeMenu().items.map(\.title), settings.makeMenuItem().submenu?.items.map(\.title))
+        let without = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {})
+        XCTAssertTrue(without.settingsButtonForTesting.isHidden)
+    }
+
+    func testTheMenuShowsTheStateAndChangesIt() throws {
+        let settings = SwitchSettings(defaults: defaults())
+        let menu = MenuBarController.makeMenu(settings: settings)
+        let submenu = try XCTUnwrap(menu.items.first { $0.title == SwitchSettings.title }?.submenu)
+        XCTAssertEqual(submenu.items.map(\.title),
+                       [SwitchSettings.arrangesWindowsTitle, SwitchSettings.minimizesOtherWindowsTitle, SwitchSettings.centersPanelTitle])
+        XCTAssertEqual(submenu.items.map(\.state), [.on, .on, .off])
+
+        for item in submenu.items {
+            XCTAssertTrue(item.target === settings)
+            NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item)
+        }
+        XCTAssertFalse(settings.arrangesWindows)
+        XCTAssertFalse(settings.minimizesOtherWindows)
+        XCTAssertTrue(settings.centersPanel)
+
+        let reopened = try XCTUnwrap(MenuBarController.makeMenu(settings: settings).items.first { $0.title == SwitchSettings.title }?.submenu)
+        XCTAssertEqual(reopened.items.map(\.state), [.off, .off, .on])
+    }
+}
+
+@MainActor
 final class MenuBarControllerTests: XCTestCase {
     func testMenuOffersAWayToQuit() throws {
         let menu = MenuBarController.makeMenu()
@@ -83,7 +150,7 @@ final class MenuBarControllerTests: XCTestCase {
         let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(contentsOf: plistURL), format: nil) as? [String: Any])
         let options = AboutPanel.options(info: plist)
         XCTAssertEqual(options[.applicationVersion] as? String, plist["CFBundleShortVersionString"] as? String)
-        XCTAssertEqual(options[.applicationVersion] as? String, "1.1.1")
+        XCTAssertEqual(options[.applicationVersion] as? String, "1.1.2")
         XCTAssertEqual(options[.version] as? String, "")
     }
 

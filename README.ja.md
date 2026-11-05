@@ -18,7 +18,7 @@
 - **Esc** — パネルを閉じます
 - **次のウィンドウのショートカット**（システム設定で変更していなければ ``Command+` ``） — 前面のアプリで表示中のウィンドウが 1 枚以下だと macOS には切り替える先がないので、代わりにこのパネルを開きます。もう一度押すと次の行へ、Shift を加えると前の行へ移ります。上下の矢印キーでも移れます。英数字を押すと、その文字で始まる行へ移り、同じ文字をもう一度押すと次の行へ進みます。キーを離すとそのウィンドウを表示します
 
-変わるのは選んだアプリだけです。最小化中のウィンドウを選ぶと元に戻り、同じアプリの他のウィンドウは最小化されます。
+変わるのは選んだアプリだけです。最小化中のウィンドウを選ぶと元に戻り、同じアプリの他のウィンドウは最小化されます。 画面いっぱいに広げる動作と最小化は、[設定](#設定)でそれぞれオフにできます。
 
 多くのアプリは、今いる Space のウィンドウと最小化中のウィンドウが、タイトルで一覧に出ます。
 
@@ -39,6 +39,26 @@ Switch は選んだウィンドウだけを表示し、ほかは最小化しま�
 複数のターミナルを単一のウィンドウで管理するターミナルアプリ [pterm](https://github.com/pontasan/pterm) をネイティブサポートしています。
 
 pterm の入手先：https://github.com/pontasan/pterm
+
+## 設定
+
+メニューバーアイコンの右クリックの `Settings`、またはパネル右下の歯車から変更できます。変更はすぐに反映され、再起動しても残ります。
+
+| メニューバーアイコンの右クリック | パネル右下の歯車 |
+| --- | --- |
+| <img src="Resources/settings-menubar.png" alt="Settings のある右クリックメニュー" width="254"> | <img src="Resources/settings-menu.png" alt="歯車から開いた設定メニュー" width="252"> |
+
+| 設定 | 既定 | 意味 | 有効な場面 |
+| --- | --- | --- | --- |
+| `Arrange Windows Automatically` | オン | 選んだウィンドウを画面に合わせて広げる（複数なら横に並べる） | ワイドディスプレイや Apple Vision Pro の仮想ディスプレイでは、オフにするとウィンドウの大きさと位置を保てる |
+| `Minimize Other Windows` | オン | 同じアプリの他のウィンドウを Dock にしまう | 他のウィンドウも見ながら作業するならオフ。2 枚以上表示中は、次のウィンドウのショートカットは macOS の切り替えになる |
+| `Show Panel in Center of Display` | オフ | パネルをアイコンの下ではなく、ディスプレイの中央に開く | ワイドディスプレイなど、アイコンが作業位置から遠いときはオン |
+
+| | |
+| --- | --- |
+| `Arrange Windows Automatically` | <img src="Resources/settings-arrange.svg" alt="Arrange Windows Automatically" width="520"> |
+| `Minimize Other Windows` | <img src="Resources/settings-minimize.svg" alt="Minimize Other Windows" width="520"> |
+| `Show Panel in Center of Display` | <img src="Resources/settings-center.svg" alt="Show Panel in Center of Display" width="520"> |
 
 ## 使いやすさの工夫
 

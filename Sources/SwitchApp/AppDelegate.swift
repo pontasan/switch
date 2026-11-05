@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcutMonitor: WindowShortcutMonitor?
     private var refreshAfterSwitch: (() -> Void)?
     private var switchInFlight: SwitchInFlight?
+    private let settings = SwitchSettings()
     /// macOS posts this when an application's Accessibility permission changes.
     private static let permissionChanged = Notification.Name("com.apple.accessibility.api")
     private static let permissionSettle: TimeInterval = 1
@@ -141,7 +142,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = WindowPanelController(
             onApply: { [weak self] application, windows in self?.apply(windows, of: application) },
             onRequestPermission: { Self.requestPermission() },
-            onQuit: { NSApp.terminate(nil) })
+            centersPanel: { [settings] in settings.centersPanel },
+            settingsMenu: { [settings] in settings.makeMenu() })
         panelController = panel
         // Almost nothing works without it, so it is asked for straight away.
         if !AXIsProcessTrusted() { Self.requestPermission() }
@@ -185,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A debug build is for checks, and must not take the place of the real one at login.
         launchAtLogin.setUpOnFirstLaunch()
         #endif
-        menuBarController = MenuBarController(launchAtLogin: launchAtLogin, onClick: { [weak self, weak panel, resolver] anchor in
+        menuBarController = MenuBarController(launchAtLogin: launchAtLogin, settings: settings, onClick: { [weak self, weak panel, resolver] anchor in
             guard let self, let panel else { return }
             if panel.isVisible {
                 panel.close()
@@ -315,24 +317,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             present(WindowPanelController.permissionMessage)
             return
         }
-        let screens = NSScreen.screens
-        guard let primary = screens.first,
-              let index = WindowLayout.screenIndex(containing: NSEvent.mouseLocation, in: screens.map(\.frame)) else {
-            present("There is no screen to arrange windows on.")
-            return
+        var columnsArea: CGRect?
+        if settings.arrangesWindows {
+            let screens = NSScreen.screens
+            guard let primary = screens.first,
+                  let index = WindowLayout.screenIndex(containing: NSEvent.mouseLocation, in: screens.map(\.frame)) else {
+                present("There is no screen to arrange windows on.")
+                return
+            }
+            columnsArea = WindowLayout.accessibilityFrame(appKitFrame: screens[index].visibleFrame, primaryScreenHeight: primary.frame.height)
         }
-        let area = screens[index].visibleFrame
-        let columnsArea = WindowLayout.accessibilityFrame(appKitFrame: area, primaryScreenHeight: primary.frame.height)
+        let minimizesOtherWindows = settings.minimizesOtherWindows
         let locator = vscodeLocator
         waitingSwitches += 1
         // Set before anything moves: the next press of the keys can come at any moment.
         let inFlight = SwitchInFlight(applicationIdentifier: application.identifier,
                                       processIdentifier: (application.application as? AccessibilityApplication)?.processIdentifier,
-                                      chosen: windows)
+                                      chosen: windows,
+                                      minimizesOtherWindows: minimizesOtherWindows)
         switchInFlight = inFlight
-        shortcutMonitor?.setSwitching(inFlight.processIdentifier.map { ($0, inFlight.windowCountWhenDone) })
+        shortcutMonitor?.setSwitching(inFlight.settling)
         let switcher = WindowSwitcher(locateVSCodeWindow: { try await locator.locate(path: $0, in: $1) },
-                                      newerSelectionIsWaiting: { [weak self] in (self?.waitingSwitches ?? 0) > 1 })
+                                      newerSelectionIsWaiting: { [weak self] in (self?.waitingSwitches ?? 0) > 1 },
+                                      minimizesOtherWindows: minimizesOtherWindows)
         // Selections run one after another. Overlapping ones would act on each other's
         // half-finished state, and each could minimize the other's windows.
         let previous = currentSwitch
@@ -344,8 +351,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 present(error.localizedDescription)
             }
-            if let processIdentifier = inFlight.processIdentifier {
-                await FrontWindow.waitUntilSettled(processIdentifier, atMost: inFlight.windowCountWhenDone) { waitingSwitches == 1 }
+            if let settling = inFlight.settling {
+                await FrontWindow.waitUntilSettled(settling.processIdentifier, atMost: settling.windowCount) { waitingSwitches == 1 }
             }
             // A newer switch has taken over what is said about the windows.
             if waitingSwitches == 1 {
