@@ -82,7 +82,7 @@ struct WindowSwitchError: LocalizedError, Equatable {
 /// Not on the main thread: every request waits for the application's answer, and an
 /// application minimizing windows takes seconds to give one. The menu must not wait for that.
 struct WindowSwitcher {
-    private static let log = Logger(subsystem: "com.tranworks.switch", category: "timing")
+    private static let log = Logger(subsystem: "com.tranworks.switch", category: "switching")
     private static let restoreTimeout: TimeInterval = 5
     private static let restorePollNanoseconds: UInt64 = 20_000_000
     private static let busyRetryNanoseconds: UInt64 = 50_000_000
@@ -100,17 +100,13 @@ struct WindowSwitcher {
 
     /// Without an area, the chosen windows keep the size and place they have.
     func apply(_ selection: [SelectedWindow], in application: ManagedApplication, columnsArea: CGRect?) async throws {
-        let start = Date()
-        func elapsed() -> Int { Int(Date().timeIntervalSince(start) * 1000) }
         let chosen = try await resolve(selection, in: application)
-        Self.log.notice("located \(chosen.count) windows at \(elapsed()) ms")
 
         let restoring = chosen.filter(\.isMinimized)
         for window in restoring {
             try await retryingWhileBusy(window) { try window.setMinimized(false) }
         }
         try await waitUntilRestored(restoring)
-        Self.log.notice("restored \(restoring.count) windows at \(elapsed()) ms")
         // A full screen window owns its Space and cannot be given a frame.
         let arranged = chosen.filter { !$0.isFullScreen }
         if let columnsArea, !arranged.isEmpty {
@@ -132,7 +128,6 @@ struct WindowSwitcher {
                 throw error
             }
         }
-        Self.log.notice("raised at \(elapsed()) ms")
         guard minimizesOtherWindows else { return }
 
         // One failure does not stop the rest; every failure is reported.
@@ -145,7 +140,6 @@ struct WindowSwitcher {
                 failures.append(error.localizedDescription)
             }
         }
-        Self.log.notice("requested minimizing at \(elapsed()) ms")
 
         // A window still coming back from an earlier selection reads as minimized above,
         // and arrives after this pass. The chosen windows are already in place, so the

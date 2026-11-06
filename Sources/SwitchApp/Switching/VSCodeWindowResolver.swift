@@ -146,7 +146,7 @@ enum VSCodeWindowsWithoutPath {
 final class VSCodeWindowResolver {
     /// VS Code writes several times per focus change.
     private static let settleDelay: TimeInterval = 0.3
-    private static let log = Logger(subsystem: "com.tranworks.switch", category: "timing")
+    private static let log = Logger(subsystem: "com.tranworks.switch", category: "vscode")
 
     private let locator: VSCodeWindowLocator
     private var running: NSRunningApplication?
@@ -325,7 +325,6 @@ final class VSCodeWindowResolver {
 
     private func resolve() {
         guard let running, let stateFile, let support = try? supportDirectory() else { return }
-        let start = Date()
         newestReading += 1
         let reading = newestReading
         let known = locator.knownWindows
@@ -334,7 +333,7 @@ final class VSCodeWindowResolver {
             do {
                 let result = try await Self.read(running: running, support: support, stateFile: stateFile, known: known, serverWindows: serverWindows)
                 guard let self, reading == self.newestReading else { return }
-                self.apply(result, running: running, start: start)
+                self.apply(result, running: running)
             } catch {
                 Self.log.error("cannot read VS Code windows: \(String(describing: error), privacy: .public)")
             }
@@ -366,7 +365,7 @@ final class VSCodeWindowResolver {
                        closedPaths: known.filter { !$0.value.exists }.map(\.key))
     }
 
-    private func apply(_ reading: Reading, running: NSRunningApplication, start: Date) {
+    private func apply(_ reading: Reading, running: NSRunningApplication) {
         let entries = reading.entries
         let windows = reading.windows
         locator.forget(paths: reading.closedPaths)
@@ -388,7 +387,6 @@ final class VSCodeWindowResolver {
                                uniquingKeysWith: { first, _ in first })
         if let pairs = assigned,
            !VSCodeWindowOrder.titlesAgree(pairs.compactMap { pair in pair.path.map { (names[$0] ?? nil, pair.window.title) } }) {
-            Self.log.notice("the saved order disagrees with the window titles")
             assigned = nil
         }
         let found = assigned?.map { (path: $0.path, window: $0.window.window) }
@@ -404,10 +402,5 @@ final class VSCodeWindowResolver {
         #endif
         updateWindowsWithoutPath(entries: entries, windows: windows, assigned: found)
         if !changes.isEmpty { onChange?() }
-        let left = windows.filter { window in
-            !locator.isKnown(window: window) && !withoutPath.contains { $0.isSame(as: window) }
-        }.count
-        let elapsed = Int(Date().timeIntervalSince(start) * 1000)
-        Self.log.notice("paired \(changes.count) by creation order, \(left) left, \(self.withoutPath.count) without a path, in \(elapsed) ms")
     }
 }

@@ -77,8 +77,9 @@ struct SwitchInFlight {
         chosen.contains { if case .ptermTerminal = $0.selection { return true } else { return false } } ? 1 : chosen.count
     }
 
-    /// What the keys go by in place of the screen until the windows have finished minimizing.
-    /// A switch that minimizes nothing has nothing to wait for, and the screen stays true.
+    /// How long the panel's rows go by this switch in place of the screen: until the windows
+    /// have finished minimizing. A switch that minimizes nothing has nothing to wait for, and
+    /// the screen stays true.
     var settling: (processIdentifier: pid_t, windowCount: Int)? {
         guard minimizesOtherWindows, let processIdentifier else { return nil }
         return (processIdentifier, windowCountWhenDone)

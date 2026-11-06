@@ -33,7 +33,9 @@ enum LetterKeys {
     }
 }
 
-/// The shortcut set in System Settings as "Move focus to next window".
+/// The shortcut set in System Settings as "Move focus to next window". Switch registers it as
+/// a hot key of its own, which reaches Switch ahead of macOS (measured) and also while another
+/// application has turned on Secure Event Input, when no event tap gets a key (measured).
 struct WindowShortcut: Equatable {
     /// Where macOS keeps its shortcuts, and this one's place among them.
     static let settingsDomain = "com.apple.symbolichotkeys"
@@ -68,97 +70,64 @@ struct WindowShortcut: Equatable {
         return parse(CFPreferencesCopyAppValue(settingsKey as CFString, domain))
     }
 
-    func matchesExactly(_ flags: UInt64) -> Bool {
-        flags & Self.modifierMask == modifiers
-    }
-
     /// The same shortcut with Shift added goes the other way, as Apple documents for the
     /// standard one. System Settings has no entry of its own for it, so it follows this one.
     /// A shortcut that already has Shift has no such partner.
-    func matchesGoingBack(_ flags: UInt64) -> Bool {
+    var goingBack: WindowShortcut? {
         let shift = CGEventFlags.maskShift.rawValue
-        return modifiers & shift == 0 && flags & Self.modifierMask == modifiers | shift
+        guard modifiers & shift == 0 else { return nil }
+        return WindowShortcut(keyCode: keyCode, modifiers: modifiers | shift)
     }
 
     func isHeld(_ flags: UInt64) -> Bool {
         flags & modifiers == modifiers
     }
+
+    /// The same modifiers as Carbon's hot keys name them.
+    static func carbonModifiers(_ flags: UInt64) -> UInt32 {
+        let pairs: [(CGEventFlags, Int)] = [(.maskCommand, cmdKey), (.maskAlternate, optionKey),
+                                             (.maskControl, controlKey), (.maskShift, shiftKey)]
+        return pairs.reduce(UInt32(0)) { flags & $1.0.rawValue != 0 ? $0 | UInt32($1.1) : $0 }
+    }
 }
 
-/// Decides what a key event means, from the events alone. The key is taken only when macOS
-/// would have nothing to switch between, and left alone otherwise.
+/// Decides what the registered hot keys mean. The shortcut always opens the panel, and the
+/// session ends when one of its modifiers is let go. While it is held, the panel is the key
+/// window and takes the arrows, the letters and Escape itself.
 struct WindowShortcutTracker {
+    /// What a hot key stands for.
+    enum Key: Hashable {
+        case shortcut, shortcutGoingBack
+    }
+
     enum Event: Equatable {
-        case keyDown(keyCode: Int64, flags: UInt64, isRepeat: Bool)
-        case keyUp(keyCode: Int64)
-        case flagsChanged(flags: UInt64)
+        case pressed(Key)
+        case modifiersChanged(flags: UInt64)
     }
 
     enum Command: Equatable {
-        case begin, beginGoingBack, advance, retreat, jump(Character), commit, cancel
+        case begin, beginGoingBack, advance, retreat, commit
     }
-
-    struct Outcome: Equatable {
-        var swallow = false
-        var command: Command? = nil
-    }
-
-    static let escapeKeyCode: Int64 = 53
-    static let downArrowKeyCode: Int64 = 125
-    static let upArrowKeyCode: Int64 = 126
-    /// With two windows or more, macOS switches between them itself.
-    static let mostWindowsToTakeOver = 1
 
     var shortcut: WindowShortcut?
-    var letterKeys: [Int64: Character] = [:]
     private(set) var isHolding = false
-    /// A key taken when pressed is taken when released too, so that no application sees
-    /// half of a key press.
-    private var takenKeys: Set<Int64> = []
 
-    /// `visibleWindowCount` is asked only when the shortcut is pressed. Nil means that
-    /// this is not for Switch to handle.
-    mutating func handle(_ event: Event, visibleWindowCount: () -> Int?) -> Outcome {
+    mutating func handle(_ event: Event) -> Command? {
         switch event {
-        case .keyDown(let keyCode, let flags, let isRepeat):
-            if isHolding {
-                if keyCode == Self.escapeKeyCode {
-                    isHolding = false
-                    takenKeys.insert(keyCode)
-                    return Outcome(swallow: true, command: .cancel)
-                }
-                if keyCode == Self.downArrowKeyCode || keyCode == Self.upArrowKeyCode {
-                    takenKeys.insert(keyCode)
-                    return Outcome(swallow: true, command: keyCode == Self.downArrowKeyCode ? .advance : .retreat)
-                }
-                guard keyCode == shortcut?.keyCode else {
-                    guard let letter = letterKeys[keyCode] else { return Outcome() }
-                    // Holding a letter down is not asking again, unlike the keys that step.
-                    takenKeys.insert(keyCode)
-                    return Outcome(swallow: true, command: isRepeat ? nil : .jump(letter))
-                }
-                takenKeys.insert(keyCode)
-                if shortcut?.matchesExactly(flags) == true { return Outcome(swallow: true, command: .advance) }
-                return Outcome(swallow: true, command: shortcut?.matchesGoingBack(flags) == true ? .retreat : nil)
-            }
-            guard !isRepeat, let shortcut, keyCode == shortcut.keyCode else { return Outcome() }
-            let goingBack = shortcut.matchesGoingBack(flags)
-            guard shortcut.matchesExactly(flags) || goingBack,
-                  let count = visibleWindowCount(), count <= Self.mostWindowsToTakeOver else { return Outcome() }
+        case .pressed(let key):
+            let back = key == .shortcutGoingBack
+            if isHolding { return back ? .retreat : .advance }
+            guard shortcut != nil else { return nil }
             isHolding = true
-            takenKeys.insert(keyCode)
-            return Outcome(swallow: true, command: goingBack ? .beginGoingBack : .begin)
-        case .keyUp(let keyCode):
-            return Outcome(swallow: takenKeys.remove(keyCode) != nil)
-        case .flagsChanged(let flags):
-            // Nothing is taken here: an application has to know that a modifier was released.
-            guard isHolding, shortcut?.isHeld(flags) != true else { return Outcome() }
+            return back ? .beginGoingBack : .begin
+        case .modifiersChanged(let flags):
+            guard isHolding, shortcut?.isHeld(flags) != true else { return nil }
             isHolding = false
-            return Outcome(command: .commit)
+            return .commit
         }
     }
 
-    /// The panel closed for another reason, such as a click outside it.
+    /// The panel closed for another reason, such as Escape or a click outside it.
     mutating func sessionEnded() {
         isHolding = false
     }

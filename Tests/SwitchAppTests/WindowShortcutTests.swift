@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import XCTest
 @testable import SwitchApp
 
@@ -37,213 +38,94 @@ final class WindowShortcutParseTests: XCTestCase {
         XCTAssertNil(WindowShortcut.parse(entry(parameters: [48, 524288])))
     }
 
-    func testOtherBitsOfTheEventDoNotMatter() {
+    func testShiftAddedGoesBack() {
+        let option = CGEventFlags.maskAlternate.rawValue
+        let shift = CGEventFlags.maskShift.rawValue
+        XCTAssertEqual(WindowShortcut(keyCode: 48, modifiers: option).goingBack, WindowShortcut(keyCode: 48, modifiers: option | shift))
+        XCTAssertNil(WindowShortcut(keyCode: 48, modifiers: option | shift).goingBack, "a shortcut that has Shift has no way back")
+    }
+
+    func testTheModifiersAsCarbonNamesThem() {
+        XCTAssertEqual(WindowShortcut.carbonModifiers(CGEventFlags.maskAlternate.rawValue), UInt32(optionKey))
+        XCTAssertEqual(WindowShortcut.carbonModifiers(CGEventFlags.maskCommand.rawValue | CGEventFlags.maskShift.rawValue),
+                       UInt32(cmdKey | shiftKey))
+        XCTAssertEqual(WindowShortcut.carbonModifiers(CGEventFlags.maskControl.rawValue | 0x100 | CGEventFlags.maskSecondaryFn.rawValue),
+                       UInt32(controlKey), "other bits are not modifiers")
+    }
+
+    func testHeldGoesByTheShortcutsModifiersOnly() {
         let shortcut = WindowShortcut(keyCode: 48, modifiers: CGEventFlags.maskAlternate.rawValue)
-        let deviceBits: UInt64 = 0x100 | CGEventFlags.maskSecondaryFn.rawValue | CGEventFlags.maskAlphaShift.rawValue
-        XCTAssertTrue(shortcut.matchesExactly(CGEventFlags.maskAlternate.rawValue | deviceBits))
-        XCTAssertFalse(shortcut.matchesExactly(CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskShift.rawValue))
-        XCTAssertFalse(shortcut.matchesExactly(0))
+        XCTAssertTrue(shortcut.isHeld(CGEventFlags.maskAlternate.rawValue | 0x100 | CGEventFlags.maskShift.rawValue))
+        XCTAssertFalse(shortcut.isHeld(0x100))
     }
 }
 
 final class WindowShortcutTrackerTests: XCTestCase {
     private let option = CGEventFlags.maskAlternate.rawValue
-    private let tab: Int64 = 48
 
     private func tracker() -> WindowShortcutTracker {
         var tracker = WindowShortcutTracker()
-        tracker.shortcut = WindowShortcut(keyCode: tab, modifiers: option)
+        tracker.shortcut = WindowShortcut(keyCode: 48, modifiers: option)
         return tracker
     }
 
-    private func press(_ tracker: inout WindowShortcutTracker, windows: Int? = 1, isRepeat: Bool = false) -> WindowShortcutTracker.Outcome {
-        tracker.handle(.keyDown(keyCode: tab, flags: option, isRepeat: isRepeat)) { windows }
-    }
-
-    func testTwoWindowsAreLeftToMacOS() {
+    private func started() -> WindowShortcutTracker {
         var tracker = tracker()
-        XCTAssertEqual(press(&tracker, windows: 2), .init())
-        XCTAssertFalse(tracker.isHolding)
-        XCTAssertEqual(tracker.handle(.keyUp(keyCode: tab)) { nil }, .init(), "macOS gets the whole key press")
+        _ = tracker.handle(.pressed(.shortcut))
+        return tracker
     }
 
-    func testNoWindowOrOneIsTaken() {
-        for count in [0, 1] {
-            var tracker = tracker()
-            XCTAssertEqual(press(&tracker, windows: count), .init(swallow: true, command: .begin))
-            XCTAssertTrue(tracker.isHolding)
-        }
-    }
-
-    func testTheWindowsAreCountedOnlyWhenTheShortcutIsPressed() {
+    func testTheShortcutAlwaysBegins() {
         var tracker = tracker()
-        var asked = 0
-        _ = tracker.handle(.keyDown(keyCode: 0, flags: 0, isRepeat: false)) { asked += 1; return 1 }
-        _ = tracker.handle(.keyDown(keyCode: tab, flags: 0, isRepeat: false)) { asked += 1; return 1 }
-        XCTAssertEqual(asked, 0, "ordinary typing must not wait for the window server")
-    }
-
-    func testAnApplicationThatIsNotForSwitchToHandleIsLeftAlone() {
-        var tracker = tracker()
-        XCTAssertEqual(press(&tracker, windows: nil), .init())
-    }
-
-    func testNoShortcutTakesNothing() {
-        var tracker = WindowShortcutTracker()
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: tab, flags: option, isRepeat: false)) { 1 }, .init())
-    }
-
-    func testAKeyHeldDownBeforehandDoesNotStartIt() {
-        var tracker = tracker()
-        XCTAssertEqual(press(&tracker, isRepeat: true), .init())
-    }
-
-    func testEachPressMovesAndAHeldKeyKeepsMoving() {
-        var tracker = tracker()
-        _ = press(&tracker)
-        XCTAssertEqual(press(&tracker, windows: nil), .init(swallow: true, command: .advance))
-        XCTAssertEqual(press(&tracker, windows: nil, isRepeat: true), .init(swallow: true, command: .advance))
-    }
-
-    func testTheArrowsMoveWhileHoldingAndTheirKeyReleasesAreTaken() {
-        var tracker = tracker()
-        _ = press(&tracker)
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 125, flags: option, isRepeat: false)) { nil }, .init(swallow: true, command: .advance))
-        XCTAssertEqual(tracker.handle(.keyUp(keyCode: 125)) { nil }, .init(swallow: true))
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 126, flags: option, isRepeat: true)) { nil }, .init(swallow: true, command: .retreat))
-        XCTAssertEqual(tracker.handle(.keyUp(keyCode: 126)) { nil }, .init(swallow: true))
-    }
-
-    func testTheArrowsBelongToTheApplicationOtherwise() {
-        var tracker = tracker()
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 126, flags: option, isRepeat: false)) { 1 }, .init())
-        XCTAssertEqual(tracker.handle(.keyUp(keyCode: 126)) { nil }, .init())
-    }
-
-    func testReleasingTheModifierCommits() {
-        var tracker = tracker()
-        _ = press(&tracker)
-        XCTAssertEqual(tracker.handle(.flagsChanged(flags: 0)) { nil }, .init(swallow: false, command: .commit))
-        XCTAssertFalse(tracker.isHolding)
-        XCTAssertEqual(tracker.handle(.flagsChanged(flags: 0)) { nil }, .init(), "once")
-    }
-
-    func testAnotherModifierDoesNotCommit() {
-        var tracker = tracker()
-        _ = press(&tracker)
-        XCTAssertEqual(tracker.handle(.flagsChanged(flags: option | CGEventFlags.maskShift.rawValue)) { nil }, .init())
-        XCTAssertTrue(tracker.isHolding)
-    }
-
-    func testAnyModifierOfSeveralReleasedCommits() {
-        var tracker = WindowShortcutTracker()
-        let both = option | CGEventFlags.maskCommand.rawValue
-        tracker.shortcut = WindowShortcut(keyCode: tab, modifiers: both)
-        _ = tracker.handle(.keyDown(keyCode: tab, flags: both, isRepeat: false)) { 1 }
-        XCTAssertEqual(tracker.handle(.flagsChanged(flags: option)) { nil }, .init(swallow: false, command: .commit))
-    }
-
-    func testTheKeyReleaseOfATakenKeyIsTakenEvenAfterCommitting() {
-        var tracker = tracker()
-        _ = press(&tracker)
-        _ = tracker.handle(.flagsChanged(flags: 0)) { nil }
-        XCTAssertEqual(tracker.handle(.keyUp(keyCode: tab)) { nil }, .init(swallow: true))
-        XCTAssertEqual(tracker.handle(.keyUp(keyCode: tab)) { nil }, .init(), "only the one that was taken")
-    }
-
-    func testEscapeCancelsAndReleasingAfterwardsDoesNothing() {
-        var tracker = tracker()
-        _ = press(&tracker)
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 53, flags: option, isRepeat: false)) { nil }, .init(swallow: true, command: .cancel))
-        XCTAssertEqual(tracker.handle(.keyUp(keyCode: 53)) { nil }, .init(swallow: true))
-        XCTAssertEqual(tracker.handle(.flagsChanged(flags: 0)) { nil }, .init())
-    }
-
-    func testEscapeBelongsToTheApplicationOtherwise() {
-        var tracker = tracker()
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 53, flags: 0, isRepeat: false)) { 1 }, .init())
-    }
-
-    func testTheShortcutWithShiftGoesBackWhileHolding() {
-        var tracker = tracker()
-        _ = press(&tracker)
-        let shift = CGEventFlags.maskShift.rawValue
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: tab, flags: option | shift, isRepeat: false)) { nil }, .init(swallow: true, command: .retreat))
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: tab, flags: option | shift, isRepeat: true)) { nil }, .init(swallow: true, command: .retreat))
-        XCTAssertEqual(tracker.handle(.flagsChanged(flags: option)) { nil }, .init(), "releasing Shift alone chooses nothing")
+        XCTAssertEqual(tracker.handle(.pressed(.shortcut)), .begin, "whatever the number of windows")
         XCTAssertTrue(tracker.isHolding)
     }
 
     func testStartingWithShiftGoesBack() {
         var tracker = tracker()
-        let shift = CGEventFlags.maskShift.rawValue
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: tab, flags: option | shift, isRepeat: false)) { 1 }, .init(swallow: true, command: .beginGoingBack))
+        XCTAssertEqual(tracker.handle(.pressed(.shortcutGoingBack)), .beginGoingBack)
         XCTAssertTrue(tracker.isHolding)
     }
 
-    func testTheShortcutWithShiftIsLeftToMacOSWithTwoWindows() {
-        var tracker = tracker()
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: tab, flags: option | CGEventFlags.maskShift.rawValue, isRepeat: false)) { 2 }, .init())
+    func testNoShortcutBeginsNothing() {
+        var tracker = WindowShortcutTracker()
+        XCTAssertNil(tracker.handle(.pressed(.shortcut)))
+    }
+
+    func testEachPressMovesAndAHeldKeyKeepsMoving() {
+        var tracker = started()
+        XCTAssertEqual(tracker.handle(.pressed(.shortcut)), .advance)
+        XCTAssertEqual(tracker.handle(.pressed(.shortcut)), .advance, "a hot key held down says so again")
+        XCTAssertEqual(tracker.handle(.pressed(.shortcutGoingBack)), .retreat)
+    }
+
+    func testReleasingTheModifierCommitsOnce() {
+        var tracker = started()
+        XCTAssertNil(tracker.handle(.modifiersChanged(flags: option | 0x100)), "still held")
+        XCTAssertEqual(tracker.handle(.modifiersChanged(flags: 0x100)), .commit)
         XCTAssertFalse(tracker.isHolding)
+        XCTAssertNil(tracker.handle(.modifiersChanged(flags: 0)), "once")
     }
 
-    func testAShortcutThatHasShiftHasNoWayBack() {
+    func testAnotherModifierDoesNotCommit() {
+        var tracker = started()
+        XCTAssertNil(tracker.handle(.modifiersChanged(flags: option | CGEventFlags.maskShift.rawValue)))
+        XCTAssertNil(tracker.handle(.modifiersChanged(flags: option)), "letting Shift go alone chooses nothing")
+        XCTAssertTrue(tracker.isHolding)
+    }
+
+    func testAnyModifierOfSeveralReleasedCommits() {
         var tracker = WindowShortcutTracker()
-        let both = option | CGEventFlags.maskShift.rawValue
-        tracker.shortcut = WindowShortcut(keyCode: tab, modifiers: both)
-        XCTAssertFalse(tracker.shortcut?.matchesGoingBack(both) == true)
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: tab, flags: both, isRepeat: false)) { 1 }, .init(swallow: true, command: .begin))
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: tab, flags: both, isRepeat: false)) { nil }, .init(swallow: true, command: .advance))
-    }
-
-    func testALetterJumpsWhileHoldingAndIsNotPassedOn() {
-        var tracker = tracker()
-        tracker.letterKeys = [40: "k"]
-        _ = press(&tracker)
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 40, flags: option, isRepeat: false)) { nil }, .init(swallow: true, command: .jump("k")))
-        XCTAssertEqual(tracker.handle(.keyUp(keyCode: 40)) { nil }, .init(swallow: true))
-    }
-
-    func testHoldingALetterDownJumpsOnce() {
-        var tracker = tracker()
-        tracker.letterKeys = [40: "k"]
-        _ = press(&tracker)
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 40, flags: option, isRepeat: true)) { nil }, .init(swallow: true))
-    }
-
-    func testALetterBelongsToTheApplicationOtherwise() {
-        var tracker = tracker()
-        tracker.letterKeys = [40: "k"]
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 40, flags: option, isRepeat: false)) { 1 }, .init())
-        XCTAssertEqual(tracker.handle(.keyUp(keyCode: 40)) { nil }, .init())
-    }
-
-    func testAShortcutOnALetterKeyStillSteps() {
-        var tracker = WindowShortcutTracker()
-        tracker.shortcut = WindowShortcut(keyCode: 40, modifiers: option)
-        tracker.letterKeys = [40: "k"]
-        _ = tracker.handle(.keyDown(keyCode: 40, flags: option, isRepeat: false)) { 1 }
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 40, flags: option, isRepeat: false)) { nil }, .init(swallow: true, command: .advance))
-    }
-
-    func testOtherKeysPassWhileHolding() {
-        var tracker = tracker()
-        _ = press(&tracker)
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: 0, flags: option, isRepeat: false)) { nil }, .init())
-    }
-
-    func testTheKeyWithAnExtraModifierDoesNotMoveOrReachAnApplication() {
-        var tracker = tracker()
-        _ = press(&tracker)
-        XCTAssertEqual(tracker.handle(.keyDown(keyCode: tab, flags: option | CGEventFlags.maskControl.rawValue, isRepeat: false)) { nil },
-                       .init(swallow: true))
+        tracker.shortcut = WindowShortcut(keyCode: 48, modifiers: option | CGEventFlags.maskCommand.rawValue)
+        _ = tracker.handle(.pressed(.shortcut))
+        XCTAssertEqual(tracker.handle(.modifiersChanged(flags: option)), .commit)
     }
 
     func testAPanelClosedAnotherWayEndsIt() {
-        var tracker = tracker()
-        _ = press(&tracker)
+        var tracker = started()
         tracker.sessionEnded()
-        XCTAssertEqual(tracker.handle(.flagsChanged(flags: 0)) { nil }, .init())
+        XCTAssertNil(tracker.handle(.modifiersChanged(flags: 0)))
+        XCTAssertEqual(tracker.handle(.pressed(.shortcut)), .begin)
     }
 }
 
@@ -629,6 +511,97 @@ final class KeyboardSessionTests: XCTestCase {
         XCTAssertEqual(ended, 1)
         panel.close()
         XCTAssertEqual(ended, 1)
+    }
+
+    func testTheShortcutGoesRoundThePinnedWindows() {
+        let (panel, pins) = panel()
+        let windows = [row("a", front: true), row("b"), row("c"), row("d"), row("e")]
+        for title in ["b", "d"] { pins.toggleWindow(title, of: "test.A") }
+        panel.beginKeyboardSession(applications: [application("A", windows)], frontmostName: "A", below: anchor)
+        let titles = { panel.keyboardRow.map { panel.applications[0].windows[$0].title } }
+        XCTAssertEqual(titles(), "b")
+        XCTAssertEqual(panel.pinnedRing?.count, 2)
+        panel.moveKeyboardSelection(by: 1)
+        XCTAssertEqual(titles(), "d")
+        panel.moveKeyboardSelection(by: 1)
+        XCTAssertEqual(titles(), "b", "round again")
+        panel.moveKeyboardSelection(by: -1)
+        XCTAssertEqual(titles(), "d", "and the other way")
+        panel.moveKeyboardSelection(by: 1, followingPins: false)
+        XCTAssertNotEqual(titles(), "b", "the arrows go to every row")
+        panel.moveKeyboardSelection(by: 1)
+        XCTAssertEqual(titles(), "b", "from there the shortcut goes on to the next pinned window")
+        panel.cancelKeyboardSession()
+    }
+
+    func testOnePinnedWindowLeavesEveryRowToTheShortcut() {
+        let (panel, pins) = panel()
+        pins.toggleWindow("c", of: "test.A")
+        panel.beginKeyboardSession(applications: [application("A", [row("a", front: true), row("b"), row("c")])],
+                                   frontmostName: "A", below: anchor)
+        XCTAssertNil(panel.pinnedRing)
+        let titles = { panel.keyboardRow.map { panel.applications[0].windows[$0].title } }
+        // c, pinned, is at the top: c, a, b. The keys start after a, the window in front.
+        XCTAssertEqual(titles(), "b")
+        panel.moveKeyboardSelection(by: 1)
+        XCTAssertEqual(titles(), "c")
+        panel.moveKeyboardSelection(by: 1)
+        XCTAssertEqual(titles(), "a", "every row, pinned or not")
+        panel.cancelKeyboardSession()
+    }
+
+    func testAPinnedWindowOnAnotherSpaceIsNotInTheRing() {
+        let (panel, pins) = panel()
+        for title in ["b", "c"] { pins.toggleWindow(title, of: "test.A") }
+        panel.reload(applications: [application("A", [row("a", front: true), row("b"), row("c", inThisSpace: false)])],
+                     hasPermission: true, frontmostName: "A")
+        XCTAssertNil(panel.pinnedRing, "one reachable pinned window is not a ring")
+        panel.close()
+    }
+
+    func testEveryWindowOnShowStandsOut() {
+        let accent = WindowPanelController.windowTextColor(row("front", front: true))
+        let side = ListedWindow(title: "side", toolTip: nil, isMinimized: false, selection: .direct(Window()))
+        let minimized = ListedWindow(title: "m", toolTip: nil, isMinimized: true, selection: .direct(Window()))
+        XCTAssertEqual(WindowPanelController.windowTextColor(side), accent, "a window side by side with the one in front")
+        XCTAssertNotEqual(WindowPanelController.windowTextColor(minimized), accent)
+        XCTAssertNotEqual(WindowPanelController.windowTextColor(row("elsewhere", inThisSpace: false)), accent)
+    }
+
+    private func key(_ keyCode: UInt16, isRepeat: Bool = false) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .option, timestamp: 0, windowNumber: 0,
+                         context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: isRepeat, keyCode: keyCode)!
+    }
+
+    func testThePanelTakesTheArrowsAndLettersWhileTheShortcutIsHeld() {
+        let (panel, _) = panel()
+        panel.letterKeys = [40: "k", 31: "o"]
+        let list = [application("A", [row("alpha", front: true), row("orange"), row("kilo"), row("owl")])]
+        XCTAssertFalse(panel.takeKeyboardSessionKey(key(40)), "not while the panel is not open from the keys")
+        panel.beginKeyboardSession(applications: list, frontmostName: "A", below: anchor)
+        XCTAssertEqual(panel.keyboardRow, 1)
+        XCTAssertTrue(panel.takeKeyboardSessionKey(key(125)))
+        XCTAssertEqual(panel.keyboardRow, 2)
+        XCTAssertTrue(panel.takeKeyboardSessionKey(key(126)))
+        XCTAssertEqual(panel.keyboardRow, 1)
+        XCTAssertTrue(panel.takeKeyboardSessionKey(key(40)))
+        XCTAssertEqual(panel.keyboardRow, 2, "k goes to kilo")
+        XCTAssertTrue(panel.takeKeyboardSessionKey(key(31)))
+        XCTAssertTrue(panel.takeKeyboardSessionKey(key(31, isRepeat: true)), "a held letter is still taken")
+        XCTAssertEqual(panel.keyboardRow, 1, "o once, to orange: holding it down is not asking again")
+        XCTAssertFalse(panel.takeKeyboardSessionKey(key(48)), "other keys go on as before")
+        panel.cancelKeyboardSession()
+    }
+
+    func testTheArrowsReachEveryRowEvenWithWindowsPinned() {
+        let (panel, pins) = panel()
+        for title in ["b", "d"] { pins.toggleWindow(title, of: "test.A") }
+        panel.beginKeyboardSession(applications: [application("A", [row("a", front: true), row("b"), row("c"), row("d")])],
+                                   frontmostName: "A", below: anchor)
+        let start = panel.keyboardRow
+        XCTAssertTrue(panel.takeKeyboardSessionKey(key(125)))
+        XCTAssertEqual(panel.keyboardRow, start.map { ($0 + 1) % 4 })
+        panel.cancelKeyboardSession()
     }
 
     func testAClickDuringTheSessionEndsIt() {

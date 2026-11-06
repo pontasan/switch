@@ -156,7 +156,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         func latestApplications() -> [ListedApplication] { latest }
         var newestReading = 0
         func refreshApplications() {
-            let start = Date()
             newestReading += 1
             let reading = newestReading
             // A slower, older reading could bring back an application that has quit.
@@ -176,9 +175,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if case .vscode(let path) = window.selection { return path }
                     return nil
                 }))
-                let vscode = applications.first { $0.bundleIdentifier == VSCodeWindowCatalog.applicationBundleIdentifier }
-                Logger(subsystem: "com.tranworks.switch", category: "timing")
-                    .notice("listed \(applications.count) applications in \(Int(Date().timeIntervalSince(start) * 1000)) ms; VS Code \(vscode?.windows.count ?? 0) windows, \(vscode?.windows.filter(\.isMinimized).count ?? 0) minimized")
             }
         }
         let vscodeLocator = self.vscodeLocator
@@ -195,15 +191,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             guard !panel.wasJustClosed else { return }
             resolver.attachIfNeeded()
-            let clicked = NSApp.currentEvent?.timestamp
             panel.show(applications: self.withSwitchInFlight(latestApplications()),
                        hasPermission: AXIsProcessTrusted(),
                        frontmostName: NSWorkspace.shared.frontmostApplication?.localizedName,
                        below: anchor)
-            if let clicked {
-                Logger(subsystem: "com.tranworks.switch", category: "timing")
-                    .notice("panel shown \(Int((ProcessInfo.processInfo.systemUptime - clicked) * 1000)) ms after the click")
-            }
             refreshApplications()
         })
         refreshApplications()
@@ -213,8 +204,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let panel else { return }
             switch command {
             case .begin, .beginGoingBack:
+                // Switch in front, as while its own menu is open, has no windows to go between.
                 guard let anchor = self.menuBarController?.anchor,
-                      let front = NSWorkspace.shared.frontmostApplication else {
+                      let front = NSWorkspace.shared.frontmostApplication,
+                      front.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
                     self.shortcutMonitor?.sessionEnded()
                     return
                 }
@@ -229,33 +222,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 panel.moveKeyboardSelection(by: 1)
             case .retreat:
                 panel.moveKeyboardSelection(by: -1)
-            case .jump(let letter):
-                panel.jumpKeyboardSelection(to: letter)
             case .commit:
                 panel.commitKeyboardSelection()
-            case .cancel:
-                panel.cancelKeyboardSession()
             }
         }
         shortcutMonitor = monitor
         panel.onKeyboardSessionEnded = { [weak monitor] in monitor?.sessionEnded() }
         monitor.setShortcut(WindowShortcut.fromSettings())
-        monitor.setLetterKeys(LetterKeys.current())
-        monitor.setFrontmost(NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        panel.letterKeys = LetterKeys.current()
         inputSourceObserver = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main
-        ) { [weak monitor] _ in
-            MainActor.assumeIsolated { monitor?.setLetterKeys(LetterKeys.current()) }
+        ) { [weak panel] _ in
+            MainActor.assumeIsolated { panel?.letterKeys = LetterKeys.current() }
         }
         monitor.start()
         // Changing the shortcut means going to System Settings and then leaving it, so this
         // also sees every change without anything having to look for one.
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak monitor] notification in
-            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            monitor?.setFrontmost(application?.processIdentifier)
-            monitor?.setShortcut(WindowShortcut.fromSettings())
+        ) { [weak monitor] _ in
+            // A changed shortcut is registered again here; an unchanged one is left as it is.
+            MainActor.assumeIsolated { monitor?.setShortcut(WindowShortcut.fromSettings()) }
         }
         // The next panel opens from this reading, so it has to know what was just paired.
         // This happens only when the pairing changes.
@@ -336,7 +323,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                       chosen: windows,
                                       minimizesOtherWindows: minimizesOtherWindows)
         switchInFlight = inFlight
-        shortcutMonitor?.setSwitching(inFlight.settling)
         let switcher = WindowSwitcher(locateVSCodeWindow: { try await locator.locate(path: $0, in: $1) },
                                       newerSelectionIsWaiting: { [weak self] in (self?.waitingSwitches ?? 0) > 1 },
                                       minimizesOtherWindows: minimizesOtherWindows)
@@ -357,7 +343,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // A newer switch has taken over what is said about the windows.
             if waitingSwitches == 1 {
                 switchInFlight = nil
-                shortcutMonitor?.setSwitching(nil)
             }
             refreshAfterSwitch?()
         }

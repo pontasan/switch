@@ -16,7 +16,7 @@ Click the menu bar icon, pick an app on the left, then pick a window on the righ
 - **Shift+click** — pick several, numbered in click order. Release Shift and they line up side by side, left to right
 - **Delete** — quit the selected app, the same way its Quit menu does. If the app asks about unsaved work, you still get to answer
 - **Esc** — close the panel
-- **Next window shortcut** (``Command+` `` unless changed in System Settings) — when the front app has one window on show or none, macOS has nothing to switch to, so this panel opens instead. Press again to move down the list, add Shift to move back up, use the up and down arrows, or type a letter or digit to go to the next window starting with it, and release to show that window
+- **Next window shortcut** (``Command+` `` unless changed in System Settings) — opens this panel, whatever the number of windows on show. Switch takes the shortcut over from macOS, and it keeps working while another app has a password field open. Press again to move down the list, add Shift to move back up, use the up and down arrows, or type a letter or digit to go to the next window starting with it, and release to show that window
 
 Only the app you picked changes. A minimized window you pick comes back, and that app's other windows minimize. Filling the screen and minimizing can each be turned off in [Settings](#settings).
 
@@ -51,7 +51,7 @@ Right-click the menu bar icon and choose `Settings`, or click the gear at the bo
 | Setting | Default | What it does | Useful when |
 | --- | --- | --- | --- |
 | `Arrange Windows Automatically` | on | Fits the chosen windows to the screen, side by side if several | Turn off on a wide display or the Apple Vision Pro virtual display, to keep each window's size and place |
-| `Minimize Other Windows` | on | Sends the app's other windows to the Dock | Turn off to keep other windows in view. With two or more on show, the next window shortcut is left to macOS |
+| `Minimize Other Windows` | on | Sends the app's other windows to the Dock | Turn off to keep other windows in view |
 | `Show Panel in Center of Display` | off | Opens the panel in the center of the display instead of below the menu bar icon | Turn on when the icon is far from where you work, as on a wide display |
 
 | | |
@@ -62,8 +62,10 @@ Right-click the menu bar icon and choose `Settings`, or click the gear at the bo
 
 ## Handy Details
 
-- **See what's in front** — the window in front of its app stands out in color
+- **See what's on show** — every window that is not minimized stands out in color, including windows side by side
 - **Pin what you use** — pinned apps and windows stay at the top of their lists, and the pins survive a restart
+- **Go round pinned windows** — pin two or more windows of an app, and the next window shortcut goes round those alone. An orange line joins them and points back to the first. The arrows and letters still reach every window<br>
+  <img src="Resources/pinned-windows.png" alt="Three pinned windows joined by an orange line, with the shortcut on the next one" width="350">
 - **Opens instantly** — the panel shows right away and updates as apps answer, so a busy app can't hold it up
 - **Fits its contents** — the panel is as tall as the list needs
 - **Liquid Glass** — the panel uses the standard macOS glass

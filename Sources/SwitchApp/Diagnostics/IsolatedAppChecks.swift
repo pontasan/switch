@@ -168,7 +168,7 @@ enum IsolatedAppChecks {
                               locate: { _, _ in throw WindowSwitchError(messages: ["No VS Code here"]) })
     }
 
-    /// The shortcut from the settings, posted as real key events through the real tap, panel
+    /// The shortcut from the settings, posted as real key events through the real hot keys, panel
     /// and switcher. Keys are posted only while the application under test is in front,
     /// because otherwise they would reach the user's application.
     private static func runShortcutCheck(outputPath: String, target: ShortcutTarget) async {
@@ -216,10 +216,10 @@ enum IsolatedAppChecks {
             for modifier in held { post(modifier.key, down: false, flags: []) }
             await settle(0.1)
         }
-        func tapKey(_ key: CGKeyCode? = nil, wait: Double = 0.3) async {
+        func tapKey(_ key: CGKeyCode? = nil, wait: Double = 0.3, extra: CGEventFlags = []) async {
             let key = key ?? CGKeyCode(shortcut.keyCode)
-            post(key, down: true, flags: flags)
-            post(key, down: false, flags: flags)
+            post(key, down: true, flags: flags.union(extra))
+            post(key, down: false, flags: flags.union(extra))
             await settle(wait)
         }
 
@@ -249,7 +249,6 @@ enum IsolatedAppChecks {
             switchInFlight = inFlight
             newestSwitch += 1
             let thisSwitch = newestSwitch
-            monitor?.setSwitching((fixture.processIdentifier, inFlight.windowCountWhenDone))
             let previous = switching
             switching = Task { @MainActor in
                 await previous?.value
@@ -257,7 +256,6 @@ enum IsolatedAppChecks {
                 await FrontWindow.waitUntilSettled(fixture.processIdentifier, atMost: inFlight.windowCountWhenDone) { thisSwitch == newestSwitch }
                 if thisSwitch == newestSwitch {
                     switchInFlight = nil
-                    monitor?.setSwitching(nil)
                 }
             }
         }, onRequestPermission: {})
@@ -274,16 +272,13 @@ enum IsolatedAppChecks {
             case .beginGoingBack: panel.beginKeyboardSession(applications: listed(), frontmostName: "Fixture", below: anchor, step: -1)
             case .advance: panel.moveKeyboardSelection(by: 1)
             case .retreat: panel.moveKeyboardSelection(by: -1)
-            case .jump(let letter): panel.jumpKeyboardSelection(to: letter)
             case .commit: panel.commitKeyboardSelection()
-            case .cancel: panel.cancelKeyboardSession()
             }
         }
         panel.onKeyboardSessionEnded = { monitor?.sessionEnded() }
         monitor?.setShortcut(shortcut)
         let letterKeys = LetterKeys.current()
-        monitor?.setLetterKeys(letterKeys)
-        monitor?.setFrontmost(fixture.processIdentifier)
+        panel.letterKeys = letterKeys
         defer { monitor?.stop() }
 
         func present(_ detail: String) async -> Bool {
@@ -328,25 +323,34 @@ enum IsolatedAppChecks {
         }
 
         monitor?.start()
-        check("the tap starts", monitor?.isRunning == true)
-        await settle(0.2)
+        check("the hot keys are registered", monitor?.isRunning == true)
+        await settle(Double(ProcessInfo.processInfo.environment["SWITCH_CHECK_SETTLE"] ?? "") ?? 0.2)
 
-        // Two or more stay with macOS.
+        // Two or more open the panel too, and macOS does not also act on the key.
         await onlyShow(windows)
         if await present("3 windows") {
             let before = frontNumber()
             await holdModifiers()
             await tapKey()
-            check("with 3 windows the panel stays closed", !panel.isVisible)
+            check("with 3 windows the panel opens", panel.isVisible)
+            check("with 3 windows macOS does not act on the key", frontNumber() == before, "front \(String(describing: before)) to \(String(describing: frontNumber()))")
+            await tapKey(53)
+            check("Escape closes it", !panel.isVisible)
             await releaseModifiers()
             await settle(0.3)
-            check("with 3 windows macOS still switches", frontNumber() != before, "front stayed \(String(describing: before))")
+            check("with 3 windows nothing was chosen", applied.isEmpty, "\(applied)")
             await holdModifiers()
             await tapKeyGoingBack()
-            check("with 3 windows the shortcut with Shift leaves the panel closed", !panel.isVisible)
+            check("with 3 windows the shortcut with Shift opens the panel", panel.isVisible)
+            let rows = panel.applications.first?.windows ?? []
+            let chosen = panel.keyboardRow.map { rows[$0].title }
             await releaseModifiers()
-            await settle(0.3)
-            check("with 3 windows nothing was chosen by Switch", applied.isEmpty, "\(applied)")
+            await settle(0.2)
+            check("with 3 windows releasing chooses the row", applied == chosen.map { [$0] } && chosen != nil, "\(applied) against \(String(describing: chosen))")
+            await switching?.value
+            await settle(0.8)
+            check("with 3 windows the chosen window is the one on show", visibleCount() == 1, "visible \(visibleCount())")
+            applied = []
         }
 
         // One window: the panel, moving, and choosing on release.
@@ -368,13 +372,19 @@ enum IsolatedAppChecks {
             await tapKey()
             await tapKey()
             check("three more presses go round to the same row", panel.keyboardRow == second, "\(String(describing: panel.keyboardRow))")
-            await tapKey(125)
-            let afterDown = panel.keyboardRow
-            check("the down arrow moves to the next row", afterDown == second.map { ($0 + 1) % rows.count }, "\(String(describing: second)) to \(String(describing: afterDown))")
-            await tapKey(126)
-            check("the up arrow moves back", panel.keyboardRow == second, "\(String(describing: afterDown)) to \(String(describing: panel.keyboardRow))")
-            await tapKey(126)
-            await tapKey(125)
+            // Posted with the numeric pad and Fn bits, as a keyboard's arrows carry them.
+            let arrowBits: CGEventFlags = [.maskNumericPad, .maskSecondaryFn]
+            let beforeKeyboardDown = panel.keyboardRow
+            await tapKey(125, extra: arrowBits)
+            check("the down arrow with a keyboard's bits moves to the next row", panel.keyboardRow == beforeKeyboardDown.map { ($0 + 1) % rows.count },
+                  "\(String(describing: beforeKeyboardDown)) to \(String(describing: panel.keyboardRow))")
+            let beforeKeyboardUp = panel.keyboardRow
+            await tapKey(126, extra: arrowBits)
+            check("the up arrow with a keyboard's bits moves back", panel.keyboardRow == beforeKeyboardUp.map { ($0 + rows.count - 1) % rows.count },
+                  "\(String(describing: beforeKeyboardUp)) to \(String(describing: panel.keyboardRow))")
+            for _ in 0..<rows.count where panel.keyboardRow != second { await tapKey() }
+            await tapKey(126, extra: arrowBits)
+            await tapKey(125, extra: arrowBits)
             check("the panel stays open through the arrows, and macOS does not act", panel.isVisible && frontNumber() == before)
             await tapKeyGoingBack()
             let afterShift = panel.keyboardRow
@@ -519,15 +529,18 @@ enum IsolatedAppChecks {
             check("with no window releasing brings one back", visibleCount() == 1, "visible \(visibleCount())")
         }
 
-        // The tap goes when asked, and the key goes back to macOS.
+        // The hot keys go when asked, and the key goes back to macOS.
         monitor?.stop()
-        check("the tap stops", monitor?.isRunning == false)
-        await onlyShow([windows[0]])
+        check("the hot keys are removed", monitor?.isRunning == false)
+        await onlyShow(windows)
         if await present("after stopping") {
+            let before = frontNumber()
             await holdModifiers()
             await tapKey()
-            check("with the tap stopped the panel stays closed", !panel.isVisible)
+            check("with the hot keys removed the panel stays closed", !panel.isVisible)
             await releaseModifiers()
+            await settle(0.3)
+            check("with the hot keys removed macOS switches again", frontNumber() != before, "front stayed \(String(describing: before))")
         }
         write(outputPath)
     }

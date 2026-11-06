@@ -1,132 +1,147 @@
 import AppKit
+import Carbon.HIToolbox
 import os
 
-/// Watches the keyboard through an event tap. Only a tap can leave a key to macOS at one
-/// moment and take it at another: a global monitor cannot stop an event, and a registered
-/// hot key always takes it.
+/// Watches for the shortcut through hot keys registered with macOS: the shortcut, and the
+/// same with Shift for going back. While it is held the panel is the key window and takes
+/// the arrows, the letters and Escape itself, so nothing else is registered.
 ///
-/// Every key press in every application passes through here, and macOS turns off a tap that
-/// answers too slowly, so it has a thread of its own and never waits for the main thread.
-final class WindowShortcutMonitor: @unchecked Sendable {
+/// A hot key reaches Switch while another application has turned on Secure Event Input,
+/// when an event tap gets no key at all (measured on 2026-11-06 with Google Chrome's sign-in
+/// page). Releasing a modifier is not a hot key, so while the shortcut is held its state is
+/// read from the window server, which also works through Secure Event Input (measured).
+@MainActor
+final class WindowShortcutMonitor {
     private static let log = Logger(subsystem: "com.tranworks.switch", category: "shortcut")
+    /// "SWCH", so that only Switch's own hot keys are handled here.
+    private static let signature: OSType = 0x5357_4348
+    /// Often enough that letting go chooses at once, and only while the shortcut is held.
+    private static let modifierPollInterval: TimeInterval = 0.015
 
-    private let lock = NSLock()
     private var tracker = WindowShortcutTracker()
-    private var frontmost: pid_t?
-    /// While a switch of Switch's own is moving windows, how many it will leave on show.
-    private var switching: (processIdentifier: pid_t, windowCount: Int)?
-    private var tap: CFMachPort?
-    private let onCommand: @MainActor (WindowShortcutTracker.Command) -> Void
+    private var handler: EventHandlerRef?
+    private var registered: [UInt32: (key: WindowShortcutTracker.Key, ref: EventHotKeyRef)] = [:]
+    private var nextID: UInt32 = 1
+    private var modifierPoll: Timer?
+    private let onCommand: (WindowShortcutTracker.Command) -> Void
 
-    init(onCommand: @escaping @MainActor (WindowShortcutTracker.Command) -> Void) {
+    init(onCommand: @escaping (WindowShortcutTracker.Command) -> Void) {
         self.onCommand = onCommand
     }
 
-    deinit {
-        stop()
-    }
+    var isRunning: Bool { handler != nil }
 
+    /// Registers the shortcut again only when it has changed, since this is asked each time
+    /// another application comes to the front.
     func setShortcut(_ shortcut: WindowShortcut?) {
-        lock.withLock { tracker.shortcut = shortcut }
+        guard shortcut != tracker.shortcut else { return }
+        tracker.shortcut = shortcut
+        guard isRunning else { return }
+        sessionEnded()
+        unregisterAll()
+        registerShortcut()
     }
 
-    func setLetterKeys(_ letterKeys: [Int64: Character]) {
-        lock.withLock { tracker.letterKeys = letterKeys }
-    }
-
-    func setFrontmost(_ processIdentifier: pid_t?) {
-        lock.withLock { frontmost = processIdentifier }
-    }
-
-    func setSwitching(_ switching: (processIdentifier: pid_t, windowCount: Int)?) {
-        lock.withLock { self.switching = switching }
-    }
-
+    /// The panel closed for another reason, such as Escape or a click outside it.
     func sessionEnded() {
-        lock.withLock { tracker.sessionEnded() }
+        tracker.sessionEnded()
+        stopReadingModifiers()
     }
 
-    var isRunning: Bool { lock.withLock { tap != nil } }
-
-    /// Needs Accessibility permission. Without it macOS would hand out a tap that gets no keys.
+    /// Needs Accessibility permission, as switching does. Without it the panel could only say so.
     func start() {
         guard AXIsProcessTrusted(), !isRunning else { return }
-        let mask = [CGEventType.keyDown, .keyUp, .flagsChanged].reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
-                                          place: .headInsertEventTap,
-                                          options: .defaultTap,
-                                          eventsOfInterest: mask,
-                                          callback: Self.callback,
-                                          userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
-            Self.log.error("the event tap could not be created")
+        var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let status = InstallEventHandler(GetApplicationEventTarget(), Self.callback, 1, &type,
+                                         Unmanaged.passUnretained(self).toOpaque(), &handler)
+        guard status == noErr else {
+            Self.log.error("the hot key handler could not be installed: \(status)")
+            handler = nil
             return
         }
-        lock.withLock { self.tap = tap }
-        let thread = Thread {
-            // Ends once the tap is invalidated, which takes its source off this run loop.
-            let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
-            CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-            CGEvent.tapEnable(tap: tap, enable: true)
-            CFRunLoopRun()
-        }
-        thread.name = "Switch event tap"
-        thread.qualityOfService = .userInteractive
-        thread.start()
+        registerShortcut()
     }
 
     func stop() {
-        let tap: CFMachPort? = lock.withLock {
-            tracker.sessionEnded()
-            defer { self.tap = nil }
-            return self.tap
-        }
-        if let tap { CFMachPortInvalidate(tap) }
+        sessionEnded()
+        unregisterAll()
+        if let handler { RemoveEventHandler(handler) }
+        handler = nil
     }
 
-    private static let callback: CGEventTapCallBack = { _, type, event, userInfo in
-        guard let userInfo else { return Unmanaged.passUnretained(event) }
+    private static let callback: EventHandlerUPP = { _, event, userInfo in
+        guard let event, let userInfo else { return OSStatus(eventNotHandledErr) }
+        var hotKeyID = EventHotKeyID()
+        let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                       nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
+        guard status == noErr, hotKeyID.signature == WindowShortcutMonitor.signature else { return OSStatus(eventNotHandledErr) }
         let monitor = Unmanaged<WindowShortcutMonitor>.fromOpaque(userInfo).takeUnretainedValue()
-        return monitor.handle(type, event) ? nil : Unmanaged.passUnretained(event)
+        // Carbon calls this on the main thread, from the application's event loop.
+        MainActor.assumeIsolated { monitor.pressed(id: hotKeyID.id) }
+        return noErr
     }
 
-    /// True when the event is taken.
-    private func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
-        let flags = event.flags.rawValue
-        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-        switch type {
-        case .keyDown:
-            return handle(.keyDown(keyCode: keyCode,
-                                   flags: flags,
-                                   isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0))
-        case .keyUp:
-            return handle(.keyUp(keyCode: keyCode))
-        case .flagsChanged:
-            return handle(.flagsChanged(flags: flags))
-        case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            Self.log.notice("the event tap was turned off, and is being turned on again")
-            if let tap = lock.withLock({ self.tap }) { CGEvent.tapEnable(tap: tap, enable: true) }
-            // A modifier may have been released while nothing was listening.
-            _ = handle(.flagsChanged(flags: CGEventSource.flagsState(.combinedSessionState).rawValue))
-            return false
-        default:
-            return false
+    private func pressed(id: UInt32) {
+        guard let key = registered[id]?.key else { return }
+        apply(tracker.handle(.pressed(key)))
+    }
+
+    private func apply(_ command: WindowShortcutTracker.Command?) {
+        guard let command else { return }
+        switch command {
+        case .begin, .beginGoingBack:
+            startReadingModifiers()
+        case .commit:
+            stopReadingModifiers()
+        case .advance, .retreat:
+            break
+        }
+        onCommand(command)
+    }
+
+    private func registerShortcut() {
+        guard let shortcut = tracker.shortcut else { return }
+        register(.shortcut, keyCode: UInt32(shortcut.keyCode), modifiers: shortcut.modifiers)
+        if let back = shortcut.goingBack {
+            register(.shortcutGoingBack, keyCode: UInt32(back.keyCode), modifiers: back.modifiers)
         }
     }
 
-    private func handle(_ event: WindowShortcutTracker.Event) -> Bool {
-        let outcome: WindowShortcutTracker.Outcome = lock.withLock {
-            tracker.handle(event) {
-                guard let frontmost, frontmost != ProcessInfo.processInfo.processIdentifier else { return nil }
-                if let switching, switching.processIdentifier == frontmost { return switching.windowCount }
-                return FrontWindow.visibleWindowCount(of: frontmost, in: FrontWindow.visibleOnScreen())
-            }
+    private func startReadingModifiers() {
+        guard modifierPoll == nil else { return }
+        let timer = Timer(timeInterval: Self.modifierPollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.readModifiers() }
         }
-        if let command = outcome.command {
-            let onCommand = self.onCommand
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { onCommand(command) }
-            }
+        // Common modes, so that a menu being tracked does not hold the release back.
+        RunLoop.main.add(timer, forMode: .common)
+        modifierPoll = timer
+    }
+
+    private func readModifiers() {
+        let flags = CGEventSource.flagsState(.combinedSessionState).rawValue
+        apply(tracker.handle(.modifiersChanged(flags: flags)))
+    }
+
+    private func stopReadingModifiers() {
+        modifierPoll?.invalidate()
+        modifierPoll = nil
+    }
+
+    private func register(_ key: WindowShortcutTracker.Key, keyCode: UInt32, modifiers: UInt64) {
+        let id = nextID
+        nextID &+= 1
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(keyCode, WindowShortcut.carbonModifiers(modifiers), EventHotKeyID(signature: Self.signature, id: id),
+                                         GetApplicationEventTarget(), 0, &ref)
+        guard status == noErr, let ref else {
+            Self.log.error("the hot key \(keyCode) could not be registered: \(status)")
+            return
         }
-        return outcome.swallow
+        registered[id] = (key, ref)
+    }
+
+    private func unregisterAll() {
+        for (_, entry) in registered { UnregisterEventHotKey(entry.ref) }
+        registered = [:]
     }
 }

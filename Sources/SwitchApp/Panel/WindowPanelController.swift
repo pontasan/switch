@@ -72,6 +72,63 @@ private final class KeyboardRowView: NSTableRowView {
     }
 }
 
+/// The window list, which joins the pinned windows the shortcut goes round with a line that
+/// comes back to the top: from the line on the left a branch goes to each pin, and the top
+/// branch ends in an arrowhead, so the last pinned window is seen to lead to the first.
+final class PinRingTableView: NSTableView {
+    /// The rows joined, in order. Nil or fewer than two draws nothing.
+    var ringRows: () -> [Int]? = { nil }
+    /// Where the pin's center is from the row's leading edge, and the line's place left of it.
+    static let pinCenterX: CGFloat = 15
+    static let laneX: CGFloat = 4.5
+    private static let branchEndX: CGFloat = 9.5
+    private static let corner: CGFloat = 3
+
+    /// The pins' centers, which the line runs past.
+    func ringPoints() -> [NSPoint] {
+        guard let rows = ringRows(), rows.count >= 2 else { return [] }
+        return rows.filter { $0 < numberOfRows }.map { row in
+            let rect = self.rect(ofRow: row)
+            // The window's own part is the bottom of a row that has a heading above it.
+            return NSPoint(x: Self.pinCenterX, y: rect.maxY - WindowPanelController.rowHeight / 2)
+        }
+    }
+
+    override func drawBackground(inClipRect clipRect: NSRect) {
+        super.drawBackground(inClipRect: clipRect)
+        let points = ringPoints()
+        guard let first = points.first, let last = points.last, points.count >= 2 else { return }
+        let path = NSBezierPath()
+        path.lineWidth = 1.5
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        // The lane, with rounded turns into the first and last branches.
+        let lane = Self.laneX, end = Self.branchEndX, corner = Self.corner
+        path.move(to: NSPoint(x: end, y: first.y))
+        path.line(to: NSPoint(x: lane + corner, y: first.y))
+        path.curve(to: NSPoint(x: lane, y: first.y + corner), controlPoint1: NSPoint(x: lane, y: first.y), controlPoint2: NSPoint(x: lane, y: first.y))
+        path.line(to: NSPoint(x: lane, y: last.y - corner))
+        path.curve(to: NSPoint(x: lane + corner, y: last.y), controlPoint1: NSPoint(x: lane, y: last.y), controlPoint2: NSPoint(x: lane, y: last.y))
+        path.line(to: NSPoint(x: end, y: last.y))
+        for point in points.dropFirst().dropLast() {
+            path.move(to: NSPoint(x: lane, y: point.y))
+            path.line(to: NSPoint(x: end, y: point.y))
+        }
+        // Orange, apart from the blue of the pins and of the windows on show (the user chose it).
+        let color = NSColor.systemOrange
+        color.setStroke()
+        path.stroke()
+        // Back into the first pin.
+        let head = NSBezierPath()
+        head.move(to: NSPoint(x: end + 1.5, y: first.y))
+        head.line(to: NSPoint(x: end - 2, y: first.y - 2.5))
+        head.line(to: NSPoint(x: end - 2, y: first.y + 2.5))
+        head.close()
+        color.setFill()
+        head.fill()
+    }
+}
+
 /// A window's place in a Shift+click selection: its number in a filled circle, which is
 /// also where it will land from the left.
 final class OrderBadge: NSView {
@@ -110,6 +167,8 @@ private final class KeyablePanel: NSPanel {
     var onFlagsChanged: ((NSEvent) -> Void)?
     var onCancel: (() -> Void)?
     var onDeleteKey: (() -> Void)?
+    /// Asked first about every key pressed. True when it was taken.
+    var onKeyDown: ((NSEvent) -> Bool)?
 
     /// The delete key above Return, and the forward delete key.
     private static let deleteKeyCodes: Set<UInt16> = [51, 117]
@@ -120,6 +179,7 @@ private final class KeyablePanel: NSPanel {
         if event.type == .flagsChanged {
             onFlagsChanged?(event)
         }
+        if event.type == .keyDown, onKeyDown?(event) == true { return }
         if event.type == .keyDown,
            Self.deleteKeyCodes.contains(event.keyCode),
            event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
@@ -160,7 +220,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
 
     private let panel: KeyablePanel
     private let applicationsTable = NSTableView()
-    private let windowsTable = NSTableView()
+    private let windowsTable = PinRingTableView()
     private let problemLabel = NSTextField(wrappingLabelWithString: "")
     private let permissionBar = NSStackView()
     private let content = NSStackView()
@@ -195,6 +255,8 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     /// The letter that last moved the row. The same one again goes on to the next match.
     private var lastKeyboardLetter: Character?
     var onKeyboardSessionEnded: (() -> Void)?
+    /// Which letter or digit each key types on its own, for going to the rows starting with it.
+    var letterKeys: [Int64: Character] = [:]
 
     init(onApply: @escaping (ListedApplication, [ListedWindow]) -> Void,
          onRequestPermission: @escaping () -> Void,
@@ -224,6 +286,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         }
         panel.onCancel = { [weak self] in self?.close() }
         panel.onDeleteKey = { [weak self] in self?.quitChosenApplication() }
+        panel.onKeyDown = { [weak self] event in self?.takeKeyboardSessionKey(event) ?? false }
         buildContent()
     }
 
@@ -288,7 +351,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
             return
         }
         guard hasMovedKeyboardRow, let previous, application.identifier == previousApplication else {
-            keyboardRow = Self.nextKeyboardRow(after: nil, in: application.windows, step: keyboardStep)
+            keyboardRow = Self.nextKeyboardRow(after: nil, in: application.windows, step: keyboardStep, among: pinnedRing)
             hasMovedKeyboardRow = false
             windowsTable.reloadData()
             return
@@ -297,7 +360,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         if matches.indices.contains(previous.nth) {
             keyboardRow = matches[previous.nth]
         } else {
-            keyboardRow = Self.nextKeyboardRow(after: nil, in: application.windows, step: keyboardStep)
+            keyboardRow = Self.nextKeyboardRow(after: nil, in: application.windows, step: keyboardStep, among: pinnedRing)
             hasMovedKeyboardRow = false
         }
         windowsTable.reloadData()
@@ -456,16 +519,51 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         isKeyboardSession = true
         show(applications: applications, hasPermission: true, frontmostName: frontmostName, below: anchor)
         keyboardStep = step
-        keyboardRow = currentApplication.flatMap { Self.nextKeyboardRow(after: nil, in: $0.windows, step: step) }
+        keyboardRow = currentApplication.flatMap { Self.nextKeyboardRow(after: nil, in: $0.windows, step: step, among: pinnedRing) }
         windowsTable.reloadData()
     }
 
-    /// One row down the list, or up it for a negative step, going round.
-    func moveKeyboardSelection(by step: Int) {
+    static let downArrowKeyCode: UInt16 = 125
+    static let upArrowKeyCode: UInt16 = 126
+
+    /// While the shortcut is held the panel is the key window, so the arrows and the letters
+    /// come here as they are typed (measured: a letter reached the panel, not a hot key).
+    /// Escape closes the panel as it always does.
+    func takeKeyboardSessionKey(_ event: NSEvent) -> Bool {
+        guard isKeyboardSession else { return false }
+        switch event.keyCode {
+        case Self.downArrowKeyCode:
+            moveKeyboardSelection(by: 1, followingPins: false)
+            return true
+        case Self.upArrowKeyCode:
+            moveKeyboardSelection(by: -1, followingPins: false)
+            return true
+        default:
+            guard let letter = letterKeys[Int64(event.keyCode)] else { return false }
+            // Holding a letter down is not asking again, unlike the keys that step.
+            if !event.isARepeat { jumpKeyboardSelection(to: letter) }
+            return true
+        }
+    }
+
+    /// One row down the list, or up it for a negative step, going round. The shortcut goes
+    /// round the pinned windows when there are two or more of them; the arrows go everywhere.
+    func moveKeyboardSelection(by step: Int, followingPins: Bool = true) {
         guard isKeyboardSession, let application = currentApplication,
-              let next = Self.nextKeyboardRow(after: keyboardRow, in: application.windows, step: step) else { return }
+              let next = Self.nextKeyboardRow(after: keyboardRow, in: application.windows, step: step,
+                                              among: followingPins ? pinnedRing : nil) else { return }
         lastKeyboardLetter = nil
         showKeyboardRow(next)
+    }
+
+    /// The pinned windows of this Space that the shortcut goes round, in the list's order.
+    /// One pinned window has nothing to go round with, so it takes two.
+    var pinnedRing: [Int]? {
+        guard let application = currentApplication else { return nil }
+        let rows = application.windows.indices.filter {
+            application.windows[$0].isInThisSpace && pins.containsWindow(application.windows[$0].pinKey, of: application.identifier)
+        }
+        return rows.count >= 2 ? rows : nil
     }
 
     /// To the first row starting with this letter, or on from the row a press of it reached.
@@ -518,13 +616,14 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
 
     /// The next row that the keys can reach, going round. It starts after the window in
     /// front, because that is the one being switched away from.
-    static func nextKeyboardRow(after row: Int?, in windows: [ListedWindow], step: Int = 1) -> Int? {
+    /// With `among`, only those rows are reached.
+    static func nextKeyboardRow(after row: Int?, in windows: [ListedWindow], step: Int = 1, among: [Int]? = nil) -> Int? {
         guard !windows.isEmpty else { return nil }
         let count = windows.count
         let start = row ?? windows.lastIndex(where: \.isFrontmost) ?? (step > 0 ? -1 : 0)
         return (1...count)
             .map { ((start + $0 * step) % count + count) % count }
-            .first { windows[$0].isInThisSpace }
+            .first { windows[$0].isInThisSpace && among?.contains($0) != false }
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -706,9 +805,10 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         return darker
     }
 
-    /// The window in front stands out, so it can be found at a glance.
+    /// The windows on show stand out, so they can be found at a glance: every one of them,
+    /// since several can be side by side. Another Space's windows are not on show here.
     static func windowTextColor(_ window: ListedWindow) -> NSColor {
-        if window.isFrontmost { return frontWindowTextColor }
+        if !window.isMinimized && window.isInThisSpace { return frontWindowTextColor }
         return window.isMinimized ? quietTextColor : .labelColor
     }
 
@@ -867,6 +967,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         }
         windowsTable.target = self
         windowsTable.action = #selector(windowsTableClicked)
+        windowsTable.ringRows = { [weak self] in self?.pinnedRing }
 
         lists.addArrangedSubview(applicationsScroll)
         lists.addArrangedSubview(windowsScroll)

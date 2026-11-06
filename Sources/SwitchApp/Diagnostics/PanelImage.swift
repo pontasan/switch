@@ -60,6 +60,24 @@ enum PanelImage {
         panel.reload(applications: list, hasPermission: true, frontmostName: "Code")
         panel.setKeyboardRowForTesting(2)
         render(panel, to: prefix + "-keys")
+        // Two windows side by side and the rest minimized, with three pinned in two sections,
+        // which the shortcut goes round.
+        let shown: Set<Int> = [1, 4]
+        let code = ListedApplication(name: "Code", icon: icon("/Applications/Visual Studio Code.app"),
+                                     windows: ["alpha-app", "golf-task", "kilo-app", "mike-web", "orange-app", "papa-ai", "server"].enumerated().map { index, title in
+                                         ListedWindow(title: title, toolTip: nil, isMinimized: !shown.contains(index), selection: .direct(NoWindow()),
+                                                      isFrontmost: index == 1)
+                                     } + ["Welcome", "main.py — server [SSH: host]"].map { title in
+                                         ListedWindow(title: title, toolTip: nil, isMinimized: true, selection: .direct(NoWindow()), isWithoutPath: true)
+                                     },
+                                     problem: nil, application: NoApplication(), bundleIdentifier: "com.microsoft.VSCode")
+        for row in [2, 6, 7] { pins.toggleWindow(code.windows[row].pinKey, of: code.identifier) }
+        let pinnedList = Array(list.dropLast()) + [code]
+        panel.reload(applications: pinnedList, hasPermission: true, frontmostName: "Code")
+        render(panel, to: prefix + "-pins")
+        panel.beginKeyboardSession(applications: pinnedList, frontmostName: "Code", below: .zero)
+        render(panel, to: prefix + "-pins-keys")
+        panel.close()
         defaults.removePersistentDomain(forName: "com.tranworks.switch.panel-image")
     }
 

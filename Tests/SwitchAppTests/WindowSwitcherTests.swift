@@ -1328,10 +1328,12 @@ final class FrontWindowTests: XCTestCase {
     }
 
     @MainActor
-    func testTheFrontRowHasItsOwnColor() {
+    func testTheRowsOnShowHaveTheirOwnColor() {
         var front = row("a")
         front.isFrontmost = true
-        let plain = WindowPanelController.windowTextColor(row("b"))
+        var elsewhere = row("b")
+        elsewhere.isInThisSpace = false
+        let plain = WindowPanelController.windowTextColor(elsewhere)
         let minimized = WindowPanelController.windowTextColor(row("c", minimized: true))
         let color = WindowPanelController.windowTextColor(front)
         XCTAssertNotEqual(color, plain)
