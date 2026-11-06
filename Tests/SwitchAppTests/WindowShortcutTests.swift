@@ -296,11 +296,11 @@ final class KeyboardSessionTests: XCTestCase {
 
     private var applied: [String] = []
 
-    private func panel() -> (WindowPanelController, PinnedApplications) {
+    private func panel() -> (WindowPanelController, PinnedWindows) {
         let suite = "switch.test.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        let pins = PinnedApplications(defaults: defaults)
+        let pins = PinnedWindows(defaults: defaults)
         return (WindowPanelController(onApply: { [weak self] _, windows in self?.applied = windows.map(\.title) },
                                       onRequestPermission: {}, pins: pins), pins)
     }

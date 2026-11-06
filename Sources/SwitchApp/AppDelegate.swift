@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var refreshAfterSwitch: (() -> Void)?
     private var switchInFlight: SwitchInFlight?
     private let settings = SwitchSettings()
+    private let disabledApplications = DisabledApplications()
     /// macOS posts this when an application's Accessibility permission changes.
     private static let permissionChanged = Notification.Name("com.apple.accessibility.api")
     private static let permissionSettle: TimeInterval = 1
@@ -142,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = WindowPanelController(
             onApply: { [weak self] application, windows in self?.apply(windows, of: application) },
             onRequestPermission: { Self.requestPermission() },
+            disabled: disabledApplications,
             centersPanel: { [settings] in settings.centersPanel },
             settingsMenu: { [settings] in settings.makeMenu() })
         panelController = panel
@@ -205,9 +207,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch command {
             case .begin, .beginGoingBack:
                 // Switch in front, as while its own menu is open, has no windows to go between.
+                // An application Switch is off for leaves the shortcut to macOS while it is in
+                // front, so the keys come here only if it came to the front just now.
                 guard let anchor = self.menuBarController?.anchor,
                       let front = NSWorkspace.shared.frontmostApplication,
-                      front.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+                      front.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+                      self.disabledApplications.isEnabled(DisabledApplications.identifier(of: front)) else {
                     self.shortcutMonitor?.sessionEnded()
                     return
                 }
@@ -228,7 +233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         shortcutMonitor = monitor
         panel.onKeyboardSessionEnded = { [weak monitor] in monitor?.sessionEnded() }
+        panel.onEnabledChanged = { [weak self] in self?.followFrontApplication() }
         monitor.setShortcut(WindowShortcut.fromSettings())
+        followFrontApplication()
         panel.letterKeys = LetterKeys.current()
         inputSourceObserver = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main
@@ -240,9 +247,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // also sees every change without anything having to look for one.
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak monitor] _ in
+        ) { [weak self, weak monitor] _ in
             // A changed shortcut is registered again here; an unchanged one is left as it is.
-            MainActor.assumeIsolated { monitor?.setShortcut(WindowShortcut.fromSettings()) }
+            MainActor.assumeIsolated {
+                monitor?.setShortcut(WindowShortcut.fromSettings())
+                self?.followFrontApplication()
+            }
         }
         // The next panel opens from this reading, so it has to know what was just paired.
         // This happens only when the pairing changes.
@@ -274,6 +284,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if panel?.isVisible == true { refreshApplications() }
             }
         }
+    }
+
+    /// The shortcut is left to macOS while an application Switch is off for is in front.
+    private func followFrontApplication() {
+        let paused = NSWorkspace.shared.frontmostApplication.map {
+            !disabledApplications.isEnabled(DisabledApplications.identifier(of: $0))
+        } ?? false
+        shortcutMonitor?.setPaused(paused)
     }
 
     private static func withFrontRefreshed(_ applications: [ListedApplication], front: NSRunningApplication,

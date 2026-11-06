@@ -529,6 +529,33 @@ enum IsolatedAppChecks {
             check("with no window releasing brings one back", visibleCount() == 1, "visible \(visibleCount())")
         }
 
+        // Switch turned off for the application in front: the key goes back to macOS, and
+        // comes back to Switch when it is turned on again.
+        monitor?.setPaused(true)
+        check("turned off, the hot keys are taken away", monitor?.isListening == false)
+        await onlyShow(windows)
+        if await present("turned off") {
+            let before = frontNumber()
+            await holdModifiers()
+            await tapKey()
+            check("turned off, the panel stays closed", !panel.isVisible)
+            await releaseModifiers()
+            await settle(0.3)
+            check("turned off, macOS switches", frontNumber() != before, "front stayed \(String(describing: before))")
+        }
+        monitor?.setPaused(false)
+        check("turned on again, the hot keys are back", monitor?.isListening == true)
+        await onlyShow([windows[0]])
+        if await present("turned on again") {
+            await holdModifiers()
+            await tapKey()
+            check("turned on again, the panel opens", panel.isVisible)
+            await releaseModifiers()
+            await settle(0.2)
+            await switching?.value
+            await settle(0.8)
+        }
+
         // The hot keys go when asked, and the key goes back to macOS.
         monitor?.stop()
         check("the hot keys are removed", monitor?.isRunning == false)

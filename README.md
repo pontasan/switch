@@ -73,7 +73,9 @@ Right-click the menu bar icon and choose `Settings`, or click the gear at the bo
 ## Handy Details
 
 - **See what's on show** — every window that is not minimized stands out in color, including windows side by side
-- **Pin what you use** — pinned apps and windows stay at the top of their lists, and the pins survive a restart
+- **Turn Switch off for an app** — flip the switch at the left of an app's row, and Switch leaves that app alone. While it is in front, the next window shortcut does what macOS does, and the panel does not switch, arrange or minimize its windows. Apps turned off move to the bottom of the list with their icons in grey. Every app is on to begin with<br>
+  <img src="Resources/app-switch-off.png" alt="Google Chrome turned off at the bottom of the list, with a note that Switch is off for it above its faded windows" width="600">
+- **Pin what you use** — pinned windows stay at the top of their app's list, and the pins survive a restart
 - **Opens instantly** — the panel shows right away and updates as apps answer, so a busy app can't hold it up
 - **Fits its contents** — the panel is as tall as the list needs
 - **Liquid Glass** — the panel uses the standard macOS glass

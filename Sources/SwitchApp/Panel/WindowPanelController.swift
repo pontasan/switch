@@ -196,6 +196,77 @@ private final class KeyablePanel: NSPanel {
     }
 }
 
+/// An application's row: its power switch, then its icon, name and number of windows. Off,
+/// the icon loses its color as well as its strength, so the row reads as switched off and not
+/// merely as quieter. It changes in place, so the knob is seen to slide.
+private final class ApplicationCell: NSView {
+    let power: PowerSwitch
+    private let icon = NSImageView()
+    private let name: NSTextField
+    private let count: NSTextField
+    private let colorIcon: NSImage
+    private let quietTextColor: NSColor
+    private let switchedOffTextColor: NSColor
+    private lazy var greyIcon = WindowPanelController.switchedOffIcon(colorIcon)
+    private static let switchedOffIconAlpha: CGFloat = 0.5
+
+    init(application: ListedApplication, quietTextColor: NSColor, switchedOffTextColor: NSColor) {
+        colorIcon = application.icon ?? NSImage()
+        self.quietTextColor = quietTextColor
+        self.switchedOffTextColor = switchedOffTextColor
+        power = PowerSwitch(isOn: true)
+        power.toolTip = "Switch for \(application.name)"
+        power.setAccessibilityLabel("Switch for \(application.name)")
+        // Rows move when an application is turned on or off, so the switch says whose it is.
+        power.identifier = NSUserInterfaceItemIdentifier(application.identifier)
+        name = NSTextField(labelWithString: application.name)
+        name.lineBreakMode = .byTruncatingTail
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        name.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        count = NSTextField(labelWithString: String(application.windows.count))
+        count.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        count.setContentHuggingPriority(.required, for: .horizontal)
+        super.init(frame: .zero)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 18).isActive = true
+        // What is done to the application, then a little apart, what it is.
+        let stack = NSStackView(views: [power, icon, name, count])
+        stack.orientation = .horizontal
+        stack.spacing = 6
+        stack.setCustomSpacing(10, after: power)
+        stack.distribution = .fill
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 8)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("ApplicationCell is not created from an archive")
+    }
+
+    func show(enabled: Bool, animated: Bool) {
+        if power.isOn != enabled { power.setOn(enabled, animated: animated) }
+        icon.image = enabled ? colorIcon : greyIcon
+        name.textColor = enabled ? .labelColor : switchedOffTextColor
+        count.textColor = enabled ? quietTextColor : switchedOffTextColor
+        let alpha = enabled ? 1 : Self.switchedOffIconAlpha
+        if animated {
+            icon.alphaValue = enabled ? Self.switchedOffIconAlpha : 1
+            NSAnimationContext.runAnimationGroup { $0.duration = 0.18; icon.animator().alphaValue = alpha }
+        } else {
+            icon.alphaValue = alpha
+        }
+    }
+}
+
 /// The window list: applications on the left, the chosen application's windows on
 /// the right. Only one application's windows are ever on screen, so windows of
 /// different applications cannot be selected together.
@@ -211,6 +282,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     static let workspacesHeading = "Workspaces"
     static let otherWindowsHeading = "Other Windows"
     private static let contentWidth: CGFloat = 576
+    private static let applicationsWidth: CGFloat = 220
     private static let reopenGuard: TimeInterval = 0.4
     /// How long after a request a loss of focus can be that request's doing.
     private static let quitWindow: TimeInterval = 10
@@ -227,9 +299,13 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     private let lists = NSStackView()
     private let applicationsScroll: NSScrollView
     private let windowsScroll: NSScrollView
+    /// The windows and, above them, what is said when Switch is off for their application.
+    private let windowsColumn = NSStackView()
+    private let disabledNotice: SwitchedOffNotice
     private let onApply: (ListedApplication, [ListedWindow]) -> Void
     private let onRequestPermission: () -> Void
-    private let pins: PinnedApplications
+    private let pins: PinnedWindows
+    private let disabled: DisabledApplications
     private let centersPanel: () -> Bool
     private let settingsMenu: (() -> NSMenu)?
     private let settingsButton = NSButton()
@@ -245,6 +321,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     /// be older than an application just started, so the update may be the first to have it.
     private var frontmostNameWhenOpened: String?
     private var isChoosingForTheUser = false
+    private var isMovingRows = false
     private var quitting: (application: ManagedApplication, requested: Date)?
     /// Open from the switching keys, which are still held.
     private(set) var isKeyboardSession = false
@@ -255,16 +332,20 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     /// The letter that last moved the row. The same one again goes on to the next match.
     private var lastKeyboardLetter: Character?
     var onKeyboardSessionEnded: (() -> Void)?
+    /// Switch was turned on or off for an application.
+    var onEnabledChanged: (() -> Void)?
     /// Which letter or digit each key types on its own, for going to the rows starting with it.
     var letterKeys: [Int64: Character] = [:]
 
     init(onApply: @escaping (ListedApplication, [ListedWindow]) -> Void,
          onRequestPermission: @escaping () -> Void,
-         pins: PinnedApplications? = nil,
+         pins: PinnedWindows? = nil,
+         disabled: DisabledApplications? = nil,
          centersPanel: @escaping () -> Bool = { false },
          settingsMenu: (() -> NSMenu)? = nil) {
         self.settingsMenu = settingsMenu
-        self.pins = pins ?? PinnedApplications()
+        self.pins = pins ?? PinnedWindows()
+        self.disabled = disabled ?? DisabledApplications()
         self.centersPanel = centersPanel
         self.onApply = onApply
         self.onRequestPermission = onRequestPermission
@@ -274,6 +355,8 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
                              defer: true)
         applicationsScroll = Self.scrollView(for: applicationsTable, identifier: "application")
         windowsScroll = Self.scrollView(for: windowsTable, identifier: "window")
+        disabledNotice = SwitchedOffNotice(detail: Self.disabledDetail, textWidth: Self.disabledNoticeTextWidth,
+                                           quietTextColor: Self.quietTextColor, fill: Self.noticeFillColor)
         super.init()
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
@@ -315,7 +398,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         let previousIndex = selectedApplication
         let previousKeyboardWindow = keyboardWindowIdentity()
         listedApplications = applications
-        self.applications = pins.ordered(applications)
+        self.applications = arranged(applications)
         applicationsTable.reloadData()
         let list = self.applications
         // When the chosen application has quit, the one that took its row is chosen.
@@ -408,7 +491,8 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
 
     private func contentHeight() -> CGFloat {
         // At least one row, so that an empty list still looks like a list.
-        let rows = max(CGFloat(applications.count) * Self.rowHeight, windowRowsHeight, Self.rowHeight)
+        let notice = disabledNotice.isHidden ? 0 : disabledNotice.fittingSize.height + windowsColumn.spacing
+        let rows = max(CGFloat(applications.count) * Self.rowHeight, windowRowsHeight + notice, Self.rowHeight)
         let others = content.arrangedSubviews.filter { $0 !== lists && !$0.isHidden }
         let othersHeight = others.reduce(CGFloat(0)) { $0 + $1.fittingSize.height }
         return rows
@@ -468,10 +552,11 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     }
 
     var isAskingForPermissionForTesting: Bool { !permissionBar.isHidden }
+    var isShowingSwitchedOffForTesting: Bool { !disabledNotice.isHidden }
 
     func reload(applications: [ListedApplication], hasPermission: Bool, frontmostName: String?) {
         listedApplications = applications
-        self.applications = pins.ordered(applications)
+        self.applications = arranged(applications)
         permissionBar.isHidden = hasPermission
         applicationsTable.reloadData()
         let list = self.applications
@@ -549,7 +634,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     /// One row down the list, or up it for a negative step, going round. The shortcut goes
     /// round the pinned windows when there are two or more of them; the arrows go everywhere.
     func moveKeyboardSelection(by step: Int, followingPins: Bool = true) {
-        guard isKeyboardSession, let application = currentApplication,
+        guard isKeyboardSession, let application = currentApplication, isEnabled(application),
               let next = Self.nextKeyboardRow(after: keyboardRow, in: application.windows, step: step,
                                               among: followingPins ? pinnedRing : nil) else { return }
         lastKeyboardLetter = nil
@@ -568,7 +653,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
 
     /// To the first row starting with this letter, or on from the row a press of it reached.
     func jumpKeyboardSelection(to letter: Character) {
-        guard isKeyboardSession, let application = currentApplication,
+        guard isKeyboardSession, let application = currentApplication, isEnabled(application),
               let next = Self.keyboardRow(startingWith: letter,
                                           after: lastKeyboardLetter == letter ? keyboardRow : nil,
                                           in: application.windows) else { return }
@@ -602,7 +687,8 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     func commitKeyboardSelection() {
         guard isKeyboardSession else { return }
         isKeyboardSession = false
-        guard let application = currentApplication, let row = keyboardRow, application.windows.indices.contains(row) else {
+        guard let application = currentApplication, isEnabled(application),
+              let row = keyboardRow, application.windows.indices.contains(row) else {
             close()
             return
         }
@@ -684,6 +770,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         selectedApplication = index
         selection.clear()
         keyboardRow = nil
+        showWhetherEnabled()
         windowsTable.reloadData()
         let problem = index.flatMap { applications[$0].problem }
         problemLabel.stringValue = problem ?? ""
@@ -692,7 +779,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     }
 
     func clickWindow(row: Int, shift: Bool) {
-        guard let application = currentApplication, application.windows.indices.contains(row) else { return }
+        guard let application = currentApplication, isEnabled(application), application.windows.indices.contains(row) else { return }
         if shift {
             selection.toggle(row)
             windowsTable.reloadData()
@@ -704,7 +791,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
 
     /// A Shift+click selection takes effect when Shift is released.
     func shiftReleased() {
-        guard let application = currentApplication, !selection.rows.isEmpty else { return }
+        guard let application = currentApplication, isEnabled(application), !selection.rows.isEmpty else { return }
         let rows = selection.rows
         selection.clear()
         apply(rows: rows, of: application)
@@ -827,47 +914,107 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
 
     private func windowPinButton(row: Int, window: ListedWindow) -> NSButton {
         let pinned = currentApplication.map { pins.containsWindow(window.pinKey, of: $0.identifier) } ?? false
-        return pinButton(pinned: pinned, row: row, action: #selector(windowPinClicked(_:)))
+        let pin = pinButton(pinned: pinned, row: row, action: #selector(windowPinClicked(_:)))
+        pin.isEnabled = currentApplication.map(isEnabled) ?? true
+        return pin
     }
 
     private func applicationCell(row: Int) -> NSView {
         let application = applications[row]
-        let pin = pinButton(pinned: pins.contains(application.identifier), row: row, action: #selector(pinClicked(_:)))
-
-        let image = NSImageView(image: application.icon ?? NSImage())
-        image.translatesAutoresizingMaskIntoConstraints = false
-        image.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        image.heightAnchor.constraint(equalToConstant: 18).isActive = true
-
-        let name = NSTextField(labelWithString: application.name)
-        name.lineBreakMode = .byTruncatingTail
-        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        name.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        let count = NSTextField(labelWithString: String(application.windows.count))
-        count.textColor = Self.quietTextColor
-        count.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        count.setContentHuggingPriority(.required, for: .horizontal)
-        return Self.row([pin, image, name, count])
+        let cell = ApplicationCell(application: application, quietTextColor: Self.quietTextColor,
+                                   switchedOffTextColor: Self.switchedOffTextColor)
+        cell.power.target = self
+        cell.power.action = #selector(enabledSwitchClicked(_:))
+        cell.show(enabled: isEnabled(application), animated: false)
+        return cell
     }
 
-    /// Pins or unpins, and moves the rows without losing what is chosen.
-    func togglePin(row: Int) {
+    func isEnabled(_ application: ListedApplication) -> Bool {
+        disabled.isEnabled(application.identifier)
+    }
+
+    /// The applications Switch is on for come first, in the order given, and those it is off
+    /// for after them. The switch takes the place of the application's pin (the user's choice).
+    /// Each application has its pinned windows first.
+    private func arranged(_ applications: [ListedApplication]) -> [ListedApplication] {
+        let ordered = pins.ordered(applications)
+        return ordered.filter(isEnabled) + ordered.filter { !isEnabled($0) }
+    }
+
+    /// Turns Switch on or off for an application. The row changes where it is, so the knob is
+    /// seen to slide, and slides to its new place among the others at the same time. What was
+    /// chosen among its windows is let go, since nothing can be done with it now.
+    func setEnabled(_ enabled: Bool, row: Int) {
         guard applications.indices.contains(row) else { return }
-        frontmostNameWhenOpened = nil
-        pins.toggle(applications[row].identifier)
-        update(applications: applications.sorted {
-            $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        })
+        let identifier = applications[row].identifier
+        let chosen = currentApplication?.identifier
+        disabled.setEnabled(enabled, for: identifier)
+        if let cell = applicationsTable.view(atColumn: 0, row: row, makeIfNecessary: false) as? ApplicationCell {
+            cell.show(enabled: enabled, animated: true)
+        }
+        let rearranged = arranged(listedApplications)
+        let destination = rearranged.firstIndex { $0.identifier == identifier }
+        applications = rearranged
+        if let destination, destination != row {
+            // The table keeps the chosen row chosen as it moves, which is not a new choice.
+            isMovingRows = true
+            applicationsTable.moveRow(at: row, to: destination)
+            isMovingRows = false
+        }
+        selectedApplication = chosen.flatMap { chosen in applications.firstIndex { $0.identifier == chosen } }
+        if let selectedApplication, applicationsTable.selectedRow != selectedApplication {
+            chooseRowForTheUser(selectedApplication)
+        }
+        if applications[destination ?? row].identifier == chosen {
+            selection.clear()
+            keyboardRow = nil
+            showWhetherEnabled()
+            windowsTable.reloadData()
+            if panel.isVisible { placePanel() }
+        }
+        onEnabledChanged?()
     }
 
-    @objc private func pinClicked(_ sender: NSButton) {
-        togglePin(row: sender.tag)
+    @objc private func enabledSwitchClicked(_ sender: PowerSwitch) {
+        guard let row = applications.firstIndex(where: { $0.identifier == sender.identifier?.rawValue }) else { return }
+        setEnabled(sender.isOn, row: row)
+    }
+
+    /// The windows of an application Switch is off for are shown faded under a note that says so.
+    private func showWhetherEnabled() {
+        let application = currentApplication
+        let enabled = application.map(isEnabled) ?? true
+        disabledNotice.isHidden = enabled
+        if let application, !enabled {
+            disabledNotice.titleText = "Switch is off for \(application.name)"
+        }
+        windowsScroll.alphaValue = enabled ? 1 : Self.switchedOffListAlpha
+    }
+
+    private static let switchedOffListAlpha: CGFloat = 0.45
+
+    /// Fainter than the quiet text, and still readable, so the name can be found to turn it on.
+    fileprivate static var switchedOffTextColor: NSColor {
+        if #available(macOS 26, *) { return labelColor(alpha: 0.4) }
+        return .tertiaryLabelColor
+    }
+
+    /// The icon in greys.
+    fileprivate static func switchedOffIcon(_ icon: NSImage) -> NSImage {
+        // Twice the size it is shown at, for a Retina display.
+        var rect = NSRect(x: 0, y: 0, width: 36, height: 36)
+        guard let cgImage = icon.cgImage(forProposedRect: &rect, context: nil, hints: nil),
+              let filter = CIFilter(name: "CIColorControls") else { return icon }
+        filter.setValue(CIImage(cgImage: cgImage), forKey: kCIInputImageKey)
+        filter.setValue(0, forKey: kCIInputSaturationKey)
+        guard let output = filter.outputImage,
+              let grey = CIContext().createCGImage(output, from: output.extent) else { return icon }
+        return NSImage(cgImage: grey, size: icon.size)
     }
 
     /// Pins or unpins a window, and moves the rows. What has been chosen with Shift stays chosen.
     func toggleWindowPin(row: Int) {
-        guard let index = selectedApplication, applications[index].windows.indices.contains(row),
+        guard let index = selectedApplication, isEnabled(applications[index]), applications[index].windows.indices.contains(row),
               let listed = listedApplications.first(where: { $0.identifier == applications[index].identifier }) else { return }
         pins.toggleWindow(applications[index].windows[row].pinKey, of: listed.identifier)
         let before = applications[index].windows
@@ -889,7 +1036,7 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard (notification.object as? NSTableView) === applicationsTable else { return }
+        guard (notification.object as? NSTableView) === applicationsTable, !isMovingRows else { return }
         if !isChoosingForTheUser {
             frontmostNameWhenOpened = nil
             hasMovedKeyboardRow = false
@@ -969,11 +1116,24 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         windowsTable.action = #selector(windowsTableClicked)
         windowsTable.ringRows = { [weak self] in self?.pinnedRing }
 
+        windowsColumn.orientation = .vertical
+        windowsColumn.alignment = .leading
+        windowsColumn.spacing = 8
+        windowsColumn.addArrangedSubview(disabledNotice)
+        windowsColumn.addArrangedSubview(windowsScroll)
+        for view in [disabledNotice, windowsScroll] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalTo: windowsColumn.widthAnchor).isActive = true
+        }
+        disabledNotice.setContentHuggingPriority(.required, for: .vertical)
+        disabledNotice.isHidden = true
+        windowsScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+
         lists.addArrangedSubview(applicationsScroll)
-        lists.addArrangedSubview(windowsScroll)
+        lists.addArrangedSubview(windowsColumn)
         lists.orientation = .horizontal
         lists.distribution = .fill
-        applicationsScroll.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        applicationsScroll.widthAnchor.constraint(equalToConstant: Self.applicationsWidth).isActive = true
 
         problemLabel.textColor = .systemRed
         // A wrapping label reports its height for this width, which the panel's height relies on.
@@ -1030,11 +1190,34 @@ final class WindowPanelController: NSObject, NSTableViewDataSource, NSTableViewD
         }
     }
 
+    static let disabledDetail = "The shortcut is left to macOS while it is in front, and its windows are not switched, arranged or minimized."
+    /// The windows' side, less the card's margins and the symbol.
+    private static let disabledNoticeTextWidth: CGFloat = contentWidth - applicationsWidth - 8 - 42
+
+    private static var noticeFillColor: NSColor {
+        if #available(macOS 26, *) { return labelColor(alpha: 0.07) }
+        return .quaternaryLabelColor
+    }
+
     /// Text that gives way to the rest. Over glass the usual grey is too faint to read when
     /// a page of text is behind it, so it is darker there.
     fileprivate static var quietTextColor: NSColor {
-        if #available(macOS 26, *) { return NSColor.labelColor.withAlphaComponent(0.72) }
+        if #available(macOS 26, *) { return labelColor(alpha: 0.72) }
         return .secondaryLabelColor
+    }
+
+    /// The text color at this strength, worked out again for each appearance. A label keeps its
+    /// color, and the text color with an alpha is fixed in the appearance it was made in
+    /// (measured: in a dark panel the hint stayed dark), so a label made before the appearance
+    /// changed kept the old one.
+    private static func labelColor(alpha: CGFloat) -> NSColor {
+        NSColor(name: nil) { appearance in
+            var color = NSColor.labelColor
+            appearance.performAsCurrentDrawingAppearance {
+                color = NSColor.labelColor.withAlphaComponent(alpha).usingColorSpace(.sRGB) ?? .labelColor
+            }
+            return color
+        }
     }
 
     fileprivate static var lineColor: NSColor {

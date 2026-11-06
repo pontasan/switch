@@ -972,56 +972,66 @@ final class WindowPanelControllerTests: XCTestCase {
         XCTAssertNil(try XCTUnwrap(panel.orderBadgeForTesting(row: 0)).number)
     }
 
-    private func pinsInFreshDefaults() throws -> (PinnedApplications, UserDefaults, () -> Void) {
+    private func pinsInFreshDefaults() throws -> (PinnedWindows, UserDefaults, () -> Void) {
         let suite = "com.tranworks.switch.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        return (PinnedApplications(defaults: defaults), defaults, { defaults.removePersistentDomain(forName: suite) })
+        return (PinnedWindows(defaults: defaults), defaults, { defaults.removePersistentDomain(forName: suite) })
     }
 
-    private func panel(pins: PinnedApplications) -> WindowPanelController {
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, pins: pins)
+    private func panel(pins: PinnedWindows, defaults: UserDefaults) -> WindowPanelController {
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, pins: pins,
+                                          disabled: DisabledApplications(defaults: defaults))
         panel.reload(applications: [listed("Alpha", ["a"]), listed("Beta", ["b1", "b2"]), listed("Gamma", ["g"])],
                      hasPermission: true, frontmostName: "Beta")
         return panel
     }
 
-    func testPinningMovesAnApplicationToTheTopAndKeepsTheOthersInOrder() throws {
-        let (pins, _, cleanup) = try pinsInFreshDefaults()
+    func testTurningOffMovesAnApplicationBelowTheOthersAndKeepsTheirOrder() throws {
+        let (pins, defaults, cleanup) = try pinsInFreshDefaults()
         defer { cleanup() }
-        let panel = panel(pins: pins)
+        let panel = panel(pins: pins, defaults: defaults)
         XCTAssertEqual(panel.applications.map(\.name), ["Alpha", "Beta", "Gamma"])
-        panel.togglePin(row: 2)
-        XCTAssertEqual(panel.applications.map(\.name), ["Gamma", "Alpha", "Beta"])
-        panel.togglePin(row: 2)
+        panel.setEnabled(false, row: 0)
         XCTAssertEqual(panel.applications.map(\.name), ["Beta", "Gamma", "Alpha"])
+        panel.setEnabled(false, row: 1)
+        XCTAssertEqual(panel.applications.map(\.name), ["Beta", "Alpha", "Gamma"], "the ones turned off are in order too")
     }
 
-    func testUnpinningReturnsAnApplicationToItsPlace() throws {
-        let (pins, _, cleanup) = try pinsInFreshDefaults()
+    func testTurningOnReturnsAnApplicationToItsPlace() throws {
+        let (pins, defaults, cleanup) = try pinsInFreshDefaults()
         defer { cleanup() }
-        let panel = panel(pins: pins)
-        panel.togglePin(row: 2)
-        panel.togglePin(row: 0)
+        let panel = panel(pins: pins, defaults: defaults)
+        panel.setEnabled(false, row: 0)
+        panel.setEnabled(true, row: 2)
         XCTAssertEqual(panel.applications.map(\.name), ["Alpha", "Beta", "Gamma"])
     }
 
-    func testPinningKeepsTheChosenApplicationAndSelection() throws {
-        let (pins, _, cleanup) = try pinsInFreshDefaults()
+    func testTurningAnotherApplicationOffKeepsTheChosenApplicationAndSelection() throws {
+        let (pins, defaults, cleanup) = try pinsInFreshDefaults()
         defer { cleanup() }
-        let panel = panel(pins: pins)
+        let panel = panel(pins: pins, defaults: defaults)
         panel.clickWindow(row: 1, shift: true)
-        panel.togglePin(row: 2)
+        panel.setEnabled(false, row: 0)
         XCTAssertEqual(panel.applications[panel.selectedApplication ?? -1].name, "Beta")
         XCTAssertEqual(panel.selection.rows, [1])
     }
 
-    func testPinsLastAcrossLaunches() throws {
+    func testTurningTheChosenApplicationOffKeepsItChosenInItsNewPlace() throws {
         let (pins, defaults, cleanup) = try pinsInFreshDefaults()
         defer { cleanup() }
-        pins.toggle("com.example.gamma")
-        XCTAssertTrue(PinnedApplications(defaults: defaults).contains("com.example.gamma"))
-        pins.toggle("com.example.gamma")
-        XCTAssertFalse(PinnedApplications(defaults: defaults).contains("com.example.gamma"))
+        let panel = panel(pins: pins, defaults: defaults)
+        panel.setEnabled(false, row: 1)
+        XCTAssertEqual(panel.selectedApplication, 2)
+        XCTAssertEqual(panel.applications[panel.selectedApplication ?? -1].name, "Beta")
+        XCTAssertTrue(panel.isShowingSwitchedOffForTesting)
+    }
+
+    func testApplicationsTurnedOffStayBelowAfterANewReading() throws {
+        let (pins, defaults, cleanup) = try pinsInFreshDefaults()
+        defer { cleanup() }
+        DisabledApplications(defaults: defaults).setEnabled(false, for: "Alpha")
+        let panel = panel(pins: pins, defaults: defaults)
+        XCTAssertEqual(panel.applications.map(\.name), ["Beta", "Gamma", "Alpha"])
     }
 
     func testAPinFollowsTheBundleIdentifierAndNotTheName() {
@@ -1062,7 +1072,7 @@ final class WindowPinTests: XCTestCase {
     }
 
     func testPinnedWindowComesFirstAndGoesBackWhenUnpinned() {
-        let pins = PinnedApplications(defaults: defaults())
+        let pins = PinnedWindows(defaults: defaults())
         let list = application([direct("a"), direct("b"), direct("c")])
         pins.toggleWindow("c", of: "app")
         XCTAssertEqual(pins.ordered([list])[0].windows.map(\.title), ["c", "a", "b"])
@@ -1072,21 +1082,21 @@ final class WindowPinTests: XCTestCase {
 
     func testPinsLastAndBelongToTheirApplication() {
         let stored = defaults()
-        PinnedApplications(defaults: stored).toggleWindow("c", of: "app")
-        let later = PinnedApplications(defaults: stored)
+        PinnedWindows(defaults: stored).toggleWindow("c", of: "app")
+        let later = PinnedWindows(defaults: stored)
         XCTAssertTrue(later.containsWindow("c", of: "app"))
         XCTAssertFalse(later.containsWindow("c", of: "other"))
     }
 
     func testPinStaysInsideItsWorkspace() {
-        let pins = PinnedApplications(defaults: defaults())
+        let pins = PinnedWindows(defaults: defaults())
         let list = application([terminal(1, "A"), terminal(2, "A"), terminal(3, "B"), terminal(4, "B")])
         pins.toggleWindow("4", of: "app")
         XCTAssertEqual(pins.ordered([list])[0].windows.map(\.title), ["t1", "t2", "t4", "t3"])
     }
 
     func testPinIsOnTheTerminalNotItsTitle() {
-        let pins = PinnedApplications(defaults: defaults())
+        let pins = PinnedWindows(defaults: defaults())
         pins.toggleWindow("2", of: "app")
         let list = application([
             ListedWindow(title: "same", toolTip: nil, isMinimized: false, selection: .ptermTerminal(id: "1"), group: "A"),
@@ -1097,7 +1107,7 @@ final class WindowPinTests: XCTestCase {
     func testPanelMovesThePinnedRowAndKeepsTheShiftSelection() {
         var applied: [String] = []
         let panel = WindowPanelController(onApply: { _, rows in applied = rows.map(\.title) }, onRequestPermission: {},
-                                          pins: PinnedApplications(defaults: defaults()))
+                                          pins: PinnedWindows(defaults: defaults()))
         panel.reload(applications: [application([direct("a"), direct("b"), direct("c")])], hasPermission: true, frontmostName: "App")
         panel.clickWindow(row: 1, shift: true)
         panel.toggleWindowPin(row: 2)
@@ -1112,7 +1122,7 @@ final class WindowPinTests: XCTestCase {
 
     func testAReadingKeepsThePinnedOrder() {
         let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {},
-                                          pins: PinnedApplications(defaults: defaults()))
+                                          pins: PinnedWindows(defaults: defaults()))
         let rows = [direct("a"), direct("b")]
         panel.reload(applications: [application(rows)], hasPermission: true, frontmostName: "App")
         panel.toggleWindowPin(row: 1)
@@ -1122,7 +1132,7 @@ final class WindowPinTests: XCTestCase {
 
     func testEachWorkspaceHasItsHeadingAndALineBetween() {
         let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {},
-                                          pins: PinnedApplications(defaults: defaults()))
+                                          pins: PinnedWindows(defaults: defaults()))
         panel.reload(applications: [application([terminal(1, "A"), terminal(2, "A"), terminal(3, "B")])],
                      hasPermission: true, frontmostName: "App")
         XCTAssertEqual((0..<3).map { panel.sectionHeading(forRow: $0) }, ["A", nil, "B"])
@@ -1352,5 +1362,116 @@ final class FrontWindowTests: XCTestCase {
         XCTAssertEqual(darker?.hueComponent ?? 0, accent?.hueComponent ?? 1, accuracy: 0.03)
         let accentDark = resolved(.controlAccentColor, .darkAqua)
         XCTAssertEqual(resolved(color, .darkAqua)?.blueComponent ?? 0, accentDark?.blueComponent ?? 0, accuracy: 0.01)
+    }
+}
+
+/// Switch turned off for an application: on until turned off, kept across launches, and the
+/// panel does nothing with that application's windows.
+@MainActor
+final class DisabledApplicationTests: XCTestCase {
+    private var suite = ""
+    private var defaults: UserDefaults!
+
+    override func setUp() async throws {
+        suite = "com.tranworks.switch.tests.\(UUID().uuidString)"
+        defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    }
+
+    override func tearDown() async throws {
+        defaults.removePersistentDomain(forName: suite)
+    }
+
+    private func listed(_ name: String, _ titles: [String]) -> ListedApplication {
+        let log = EventLog()
+        return ListedApplication(
+            name: name, icon: nil,
+            windows: titles.map {
+                ListedWindow(title: $0, toolTip: nil, isMinimized: false, selection: .direct(FakeWindow($0, log: log)))
+            },
+            problem: nil, application: FakeApplication(log: log), bundleIdentifier: "com.example.\(name.lowercased())")
+    }
+
+    private func makePanel(frontmost: String) -> (WindowPanelController, DisabledApplications, () -> [[String]]) {
+        var applied: [[String]] = []
+        let disabled = DisabledApplications(defaults: defaults)
+        let panel = WindowPanelController(onApply: { _, windows in applied.append(windows.map(\.title)) },
+                                          onRequestPermission: {},
+                                          pins: PinnedWindows(defaults: defaults),
+                                          disabled: disabled)
+        panel.reload(applications: [listed("Chrome", ["c1", "c2"]), listed("Code", ["a", "b"])],
+                     hasPermission: true, frontmostName: frontmost)
+        return (panel, disabled, { applied })
+    }
+
+    func testEveryApplicationIsOnUntilTurnedOff() {
+        let disabled = DisabledApplications(defaults: defaults)
+        XCTAssertTrue(disabled.isEnabled("com.google.Chrome"))
+        disabled.setEnabled(false, for: "com.google.Chrome")
+        XCTAssertFalse(disabled.isEnabled("com.google.Chrome"))
+        XCTAssertTrue(disabled.isEnabled("com.microsoft.VSCode"), "turning one off leaves the others on")
+    }
+
+    func testTurningOffLastsAcrossLaunches() {
+        DisabledApplications(defaults: defaults).setEnabled(false, for: "com.google.Chrome")
+        XCTAssertFalse(DisabledApplications(defaults: defaults).isEnabled("com.google.Chrome"))
+        DisabledApplications(defaults: defaults).setEnabled(true, for: "com.google.Chrome")
+        XCTAssertTrue(DisabledApplications(defaults: defaults).isEnabled("com.google.Chrome"))
+    }
+
+    func testTheRunningApplicationIsKnownByTheSameIdentifierAsItsRow() {
+        let running = NSRunningApplication.current
+        XCTAssertEqual(DisabledApplications.identifier(of: running), running.bundleIdentifier ?? running.localizedName)
+    }
+
+    func testClickingAWindowOfAnApplicationTurnedOffDoesNothing() {
+        let (panel, disabled, applied) = makePanel(frontmost: "Chrome")
+        disabled.setEnabled(false, for: "com.example.chrome")
+        panel.clickWindow(row: 0, shift: false)
+        panel.clickWindow(row: 1, shift: true)
+        panel.shiftReleased()
+        XCTAssertTrue(applied().isEmpty)
+        XCTAssertTrue(panel.selection.rows.isEmpty)
+    }
+
+    func testTurningOffInThePanelShowsItAndStopsClicks() {
+        let (panel, _, applied) = makePanel(frontmost: "Chrome")
+        var changes = 0
+        panel.onEnabledChanged = { changes += 1 }
+        XCTAssertFalse(panel.isShowingSwitchedOffForTesting)
+        panel.clickWindow(row: 1, shift: true)
+        panel.setEnabled(false, row: 0)
+        XCTAssertTrue(panel.isShowingSwitchedOffForTesting)
+        XCTAssertTrue(panel.selection.rows.isEmpty, "what was chosen is let go")
+        XCTAssertEqual(changes, 1)
+        panel.clickWindow(row: 0, shift: false)
+        XCTAssertTrue(applied().isEmpty)
+        // Turned off, Chrome has gone below Code.
+        XCTAssertEqual(panel.applications.map(\.name), ["Code", "Chrome"])
+
+        panel.setEnabled(true, row: 1)
+        XCTAssertFalse(panel.isShowingSwitchedOffForTesting)
+        panel.clickWindow(row: 0, shift: false)
+        XCTAssertEqual(applied(), [["c1"]])
+    }
+
+    func testAnotherApplicationTurnedOffLeavesThisOneAlone() {
+        let (panel, disabled, applied) = makePanel(frontmost: "Code")
+        disabled.setEnabled(false, for: "com.example.chrome")
+        panel.reload(applications: panel.applications, hasPermission: true, frontmostName: "Code")
+        XCTAssertFalse(panel.isShowingSwitchedOffForTesting)
+        panel.clickWindow(row: 1, shift: false)
+        XCTAssertEqual(applied(), [["b"]])
+    }
+
+    func testTheKeysDoNothingInAnApplicationTurnedOff() {
+        let (panel, disabled, applied) = makePanel(frontmost: "Code")
+        panel.beginKeyboardSession(applications: panel.applications, frontmostName: "Code", below: .zero)
+        disabled.setEnabled(false, for: "com.example.code")
+        panel.chooseApplication(1)
+        panel.moveKeyboardSelection(by: 1)
+        XCTAssertNil(panel.keyboardRow)
+        panel.commitKeyboardSelection()
+        XCTAssertTrue(applied().isEmpty)
+        XCTAssertFalse(panel.isVisible)
     }
 }

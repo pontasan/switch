@@ -1,42 +1,30 @@
 import Foundation
 
-/// Applications the user keeps at the top of the list, and windows kept at the top of an
-/// application's list. Applications are stored by bundle identifier, so a pin lasts across
-/// launches of both Switch and the application.
+/// Windows kept at the top of an application's list, which the shortcut goes round. Stored
+/// with the application's bundle identifier, so a pin lasts across launches of both Switch
+/// and the application.
+///
+/// Applications themselves are no longer pinned: the power switch puts the applications
+/// Switch is on for above the others (the user's choice, 2026-11-06). Pins stored for
+/// applications by earlier versions under "pinnedApplications" are not read.
 @MainActor
-final class PinnedApplications {
-    private static let key = "pinnedApplications"
+final class PinnedWindows {
     private static let windowsKey = "pinnedWindows"
     private let defaults: UserDefaults
-    private var identifiers: Set<String>
     private var windows: Set<String>
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        identifiers = Set(defaults.stringArray(forKey: Self.key) ?? [])
         windows = Set(defaults.stringArray(forKey: Self.windowsKey) ?? [])
     }
 
-    func contains(_ identifier: String) -> Bool {
-        identifiers.contains(identifier)
-    }
-
-    func toggle(_ identifier: String) {
-        if identifiers.remove(identifier) == nil {
-            identifiers.insert(identifier)
-        }
-        defaults.set(identifiers.sorted(), forKey: Self.key)
-    }
-
-    /// Pinned applications first, each with its pinned windows first. Within each group the
-    /// given order stays.
+    /// Each application with its pinned windows first. The applications stay in the given order.
     func ordered(_ applications: [ListedApplication]) -> [ListedApplication] {
-        let windowsOrdered = applications.map { application -> ListedApplication in
+        applications.map { application -> ListedApplication in
             var ordered = application
             ordered.windows = windowOrder(of: application).map { application.windows[$0] }
             return ordered
         }
-        return windowsOrdered.filter { contains($0.identifier) } + windowsOrdered.filter { !contains($0.identifier) }
     }
 
     /// Two applications can have windows with the same name.

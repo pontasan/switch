@@ -29,8 +29,8 @@ enum PanelImage {
     static func write(to prefix: String) {
         guard let defaults = UserDefaults(suiteName: "com.tranworks.switch.panel-image") else { return }
         defaults.removePersistentDomain(forName: "com.tranworks.switch.panel-image")
-        let pins = PinnedApplications(defaults: defaults)
-        pins.toggle("com.microsoft.VSCode")
+        let pins = PinnedWindows(defaults: defaults)
+        let disabled = DisabledApplications(defaults: defaults)
         let icon = { (path: String) in NSWorkspace.shared.icon(forFile: path) }
         func application(_ name: String, _ bundle: String, _ path: String, _ titles: [String], withoutPath: [String] = []) -> ListedApplication {
             ListedApplication(name: name, icon: icon(path),
@@ -51,7 +51,7 @@ enum PanelImage {
                         ["alpha-app", "golf-task", "kilo-app", "mike-web", "orange-app", "papa-ai", "server", "sierra-ai"],
                         withoutPath: ["Welcome", "main.py — server [SSH: host]"])
         ]
-        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, pins: pins, settingsMenu: { NSMenu() })
+        let panel = WindowPanelController(onApply: { _, _ in }, onRequestPermission: {}, pins: pins, disabled: disabled, settingsMenu: { NSMenu() })
         panel.reload(applications: list, hasPermission: true, frontmostName: "Code")
         panel.clickWindow(row: 6, shift: true)
         panel.clickWindow(row: 2, shift: true)
@@ -78,6 +78,14 @@ enum PanelImage {
         panel.beginKeyboardSession(applications: pinnedList, frontmostName: "Code", below: .zero)
         render(panel, to: prefix + "-pins-keys")
         panel.close()
+        // Switch turned off for Chrome: its row among the others, and its own windows.
+        // In name order, as the list is read.
+        let named = pinnedList.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        disabled.setEnabled(false, for: "com.google.Chrome")
+        panel.reload(applications: named, hasPermission: true, frontmostName: "Code")
+        render(panel, to: prefix + "-off")
+        panel.reload(applications: named, hasPermission: true, frontmostName: "Google Chrome")
+        render(panel, to: prefix + "-off-chosen")
         defaults.removePersistentDomain(forName: "com.tranworks.switch.panel-image")
     }
 

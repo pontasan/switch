@@ -30,12 +30,28 @@ final class WindowShortcutMonitor {
     }
 
     var isRunning: Bool { handler != nil }
+    /// Whether the shortcut reaches Switch now, rather than macOS.
+    var isListening: Bool { !registered.isEmpty }
+    /// Set while an application that Switch is off for is in front. Its hot keys are taken
+    /// away, so the shortcut does what macOS does with it there.
+    private var isPaused = false
 
     /// Registers the shortcut again only when it has changed, since this is asked each time
     /// another application comes to the front.
     func setShortcut(_ shortcut: WindowShortcut?) {
         guard shortcut != tracker.shortcut else { return }
         tracker.shortcut = shortcut
+        registerAgain()
+    }
+
+    /// Leaves the shortcut to macOS, or takes it back.
+    func setPaused(_ paused: Bool) {
+        guard paused != isPaused else { return }
+        isPaused = paused
+        registerAgain()
+    }
+
+    private func registerAgain() {
         guard isRunning else { return }
         sessionEnded()
         unregisterAll()
@@ -100,7 +116,7 @@ final class WindowShortcutMonitor {
     }
 
     private func registerShortcut() {
-        guard let shortcut = tracker.shortcut else { return }
+        guard !isPaused, let shortcut = tracker.shortcut else { return }
         register(.shortcut, keyCode: UInt32(shortcut.keyCode), modifiers: shortcut.modifiers)
         if let back = shortcut.goingBack {
             register(.shortcutGoingBack, keyCode: UInt32(back.keyCode), modifiers: back.modifiers)
