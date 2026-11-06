@@ -34,6 +34,16 @@ Switch shows the window you pick and minimizes the rest. From there, press the n
 
 ![Switching to minimized VS Code windows with the keyboard](Resources/demo3.gif)
 
+## Go Round Pinned Windows
+
+Out of all your windows, pin the few you are working on now. The next window shortcut (``Command+` `` by default) then goes round those alone, however many other windows the app has, so one key takes you back and forth between them. To pin a window, click the pin at the left of its row in the panel. Pin two or more windows of the same app.
+
+<img src="Resources/pinned-cycle.svg" alt="Each press of the next window shortcut goes from kilo-app to server to Welcome and back to kilo-app, skipping the windows that are not pinned" width="620">
+
+In the panel, an orange line joins the pinned windows and points back to the first, so you can see the round. The arrow keys and letters still reach every window.
+
+<img src="Resources/pinned-windows.png" alt="Three pinned windows joined by an orange line, with the shortcut on the next one" width="350">
+
 ## Built for pterm
 
 Natively supports [pterm](https://github.com/pontasan/pterm), a terminal app that manages multiple terminals in a single window.
@@ -64,8 +74,6 @@ Right-click the menu bar icon and choose `Settings`, or click the gear at the bo
 
 - **See what's on show** — every window that is not minimized stands out in color, including windows side by side
 - **Pin what you use** — pinned apps and windows stay at the top of their lists, and the pins survive a restart
-- **Go round pinned windows** — pin two or more windows of an app, and the next window shortcut goes round those alone. An orange line joins them and points back to the first. The arrows and letters still reach every window<br>
-  <img src="Resources/pinned-windows.png" alt="Three pinned windows joined by an orange line, with the shortcut on the next one" width="350">
 - **Opens instantly** — the panel shows right away and updates as apps answer, so a busy app can't hold it up
 - **Fits its contents** — the panel is as tall as the list needs
 - **Liquid Glass** — the panel uses the standard macOS glass
